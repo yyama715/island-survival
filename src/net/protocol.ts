@@ -1,5 +1,5 @@
 // サーバーと画面のあいだで送るメッセージ。
-import type { MapSize, PlanAction, PlayerView, ReplayStep } from '../core/index';
+import type { MapSize, PlanAction, PlayerView, ReplayStep, WhisperView } from '../core/index';
 
 export interface RoomSetup {
   players: number;
@@ -16,6 +16,8 @@ export type ClientMessage =
   | { t: 'resume'; token: string }
   | { t: 'start' }
   | { t: 'plan'; actions: PlanAction[]; ready: boolean }
+  | { t: 'whisperRespond'; id: number; accept: boolean }
+  | { t: 'whisperSend'; id: number; text: string }
   | { t: 'backToLobby' }
   | { t: 'leave' }
   /** 接続中はホスティング先にサーバーを眠らせないための合図。返事はない */
@@ -65,6 +67,8 @@ export type ServerMessage =
       status: PlanStatus[];
     }
   | { t: 'status'; status: PlanStatus[] }
+  /** 計画フェーズ中の密談の変化 */
+  | { t: 'whisperUpdate'; whispers: WhisperView[]; whisperSeen: { x: number; y: number }[] }
   /** 解決フェーズの再生。全員の再生が終わる頃に次のメッセージが届く */
   | { t: 'replay'; steps: ReplayStep[]; stepMs: number }
   /** 解決の再生中に再接続した人へ、盤面だけ渡す */

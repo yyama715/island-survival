@@ -3,15 +3,20 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import {
   createGame,
   DEFAULT_PLAN_SECONDS,
+  cleanText,
   getPlayerView,
   ITEMS,
+  LETTER,
   MAP_CONFIG,
   MAP_SIZE_NAMES,
   MAX_PLAN_ACTIONS,
   PLAN_SECONDS_OPTIONS,
   projectPlan,
+  RECIPES,
   replayFor,
   resolveTurn,
+  respondWhisper,
+  sendWhisper,
   type GameState,
   type MapSize,
   type PlanAction,
@@ -67,15 +72,28 @@ function cleanPlan(value: unknown): PlanAction[] | null {
   if (!Array.isArray(value) || value.length > MAX_PLAN_ACTIONS) return null;
   const plan: PlanAction[] = [];
   for (const raw of value as Record<string, unknown>[]) {
-    if (raw?.type === 'gather') plan.push({ type: 'gather' });
-    else if (raw?.type === 'move' && DIRECTIONS.includes(raw.direction as string)) {
+    if (raw?.type === 'gather' || raw?.type === 'rest' || raw?.type === 'guard' || raw?.type === 'hide' || raw?.type === 'ambush') {
+      plan.push({ type: raw.type });
+    } else if (raw?.type === 'use' && typeof raw.item === 'string' && Object.hasOwn(ITEMS, raw.item)) {
+      plan.push({ type: 'use', item: raw.item as 'fruit' });
+    } else if (raw?.type === 'craft' && typeof raw.recipe === 'string' && Object.hasOwn(RECIPES, raw.recipe)) {
+      plan.push({ type: 'craft', recipe: raw.recipe as 'torch' });
+    } else if (raw?.type === 'letter') {
+      plan.push({ type: 'letter', text: cleanText(raw.text, LETTER.maxLength) });
+    } else if (raw?.type === 'whisper' && Number.isInteger(raw.x) && Number.isInteger(raw.y)) {
+      const who = raw.who === undefined ? {} : Number.isInteger(raw.who) ? { who: raw.who as number } : null;
+      if (!who) return null;
+      plan.push({ type: 'whisper', x: raw.x as number, y: raw.y as number, ...who });
+    } else if (raw?.type === 'move' && DIRECTIONS.includes(raw.direction as string)) {
       plan.push({ type: 'move', direction: raw.direction as 'up' });
     } else if (raw?.type === 'discard' && typeof raw.item === 'string' && Object.hasOwn(ITEMS, raw.item)) {
       plan.push({ type: 'discard', item: raw.item as 'wood' });
     } else if (raw?.type === 'attack' && Number.isInteger(raw.x) && Number.isInteger(raw.y)) {
       const who = raw.who === undefined ? {} : Number.isInteger(raw.who) ? { who: raw.who as number } : null;
       if (!who) return null;
-      plan.push({ type: 'attack', x: raw.x as number, y: raw.y as number, ...who });
+      const thrown = raw.throwStone === true ? { throwStone: true } : {};
+      const bottle = raw.useBottle === true ? { useBottle: true } : {};
+      plan.push({ type: 'attack', x: raw.x as number, y: raw.y as number, ...who, ...thrown, ...bottle });
     } else return null;
   }
   return plan;
@@ -256,6 +274,22 @@ class Room {
     return null;
   }
 
+  /** 6.1 密談への返事とメッセージ。計画フェーズの間だけ受け付ける */
+  whisper(member: Member, id: unknown, change: { accept: boolean } | { text: unknown }) {
+    if (this.stage !== 'planning' || typeof id !== 'number') return;
+    const seat = this.seatOf(member);
+    const next =
+      'accept' in change
+        ? respondWhisper(this.state!, seat, id, change.accept)
+        : sendWhisper(this.state!, seat, id, change.text);
+    if (!next) return;
+    this.state = next;
+    this.members.forEach((m, index) => {
+      const view = getPlayerView(next, index);
+      m.connection?.send({ t: 'whisperUpdate', whispers: view.whispers, whisperSeen: view.whisperSeen });
+    });
+  }
+
   private resolveIfEveryoneReady() {
     if (this.stage !== 'planning') return;
     const waitingOn = this.members.filter((m) => m.connection && this.alive(m));
@@ -421,6 +455,12 @@ export class RoomManager {
         break;
       case 'plan':
         error = room.setPlan(member, message.actions, message.ready);
+        break;
+      case 'whisperRespond':
+        room.whisper(member, message.id, { accept: message.accept === true });
+        break;
+      case 'whisperSend':
+        room.whisper(member, message.id, { text: message.text });
         break;
       case 'backToLobby':
         error = room.backToLobby(member);

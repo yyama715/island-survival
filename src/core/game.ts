@@ -1,27 +1,53 @@
 // ルール本体。applyAction は元の状態を変更せず、新しい状態と出来事を返す。
 import {
+  AMBUSH_AP,
   AP_PER_TURN,
   ATTACK_AP,
+  BLEED_CONTINUE_CHANCE,
+  BOTTLE,
+  BOTTLE_ITEM,
   CANTEEN,
   COMBAT,
   DEFAULT_AGILITY,
   DEPLETION,
+  DRINK_AT_SOURCE,
   EARLY_PROTECTION_TURNS,
+  FATIGUE,
   FISHING_TOOLS,
   GATHER_AP,
+  GUARD_AP,
+  HIDE_AP,
   INITIAL_HP,
+  INITIAL_HUNGER,
+  INITIAL_WATER,
   INITIATIVE_MODIFIER,
   INVENTORY_SLOTS,
+  ITEMS,
+  LETTER,
+  LETTER_AP,
+  MAX_HUNGER,
+  MAX_WATER,
   NIGHT_GATHER_PENALTY,
   PITY_AFTER_DRY_STREAK,
+  POISON,
+  RECIPES,
+  REST_HUT_MULTIPLIER,
   RIVER_FISH_CHANCE,
   SPECIAL_LOOT,
   SPECIAL_REPEAT_NOTHING_CHANCE,
   STACK_SIZE,
+  STATUS_DAMAGE,
   TERRAIN,
+  THROW,
+  THROW_ITEM,
+  TORCH_NIGHT_VISION,
+  TRAP_DAMAGE,
   UNARMED,
   VISION_BASE,
+  WEAK_THRESHOLD,
   WEAPONS,
+  WHISPER,
+  WHISPER_AP,
   type GatherEntry,
   type ItemRoll,
   type WeaponDef,
@@ -41,6 +67,7 @@ import type {
   Phase,
   PlanAction,
   PlayerState,
+  RecipeId,
   ResolutionStep,
   SpecialTerrainId,
   TerrainId,
@@ -59,10 +86,19 @@ export const phaseOf = (turn: number): Phase => (turn % 2 === 1 ? 'day' : 'night
 export const dayOf = (turn: number) => Math.ceil(turn / 2);
 
 /** 3.3 視界半径。距離は隣接8マスと同じ数え方（斜めも1マス） */
-export function visionRadius(terrain: TerrainId, phase: Phase): number {
+export function visionRadius(terrain: TerrainId, phase: Phase, hasTorch = false): number {
   const def = TERRAIN[terrain];
-  return Math.max(0, VISION_BASE + (phase === 'day' ? def.visionDay : def.visionNight));
+  const bonus = phase === 'day' ? def.visionDay : def.visionNight + (hasTorch ? TORCH_NIGHT_VISION : 0);
+  return Math.max(0, VISION_BASE + bonus);
 }
+
+export const hasItem = (player: PlayerState, item: ItemId) => player.inventory.some((stack) => stack.item === item);
+
+/** 5章 満腹度と水分がどちらも低いと弱っている */
+export const isWeak = (player: { hunger: number; water: number }) =>
+  player.hunger <= WEAK_THRESHOLD && player.water <= WEAK_THRESHOLD;
+
+const chebyshev = (ax: number, ay: number, bx: number, by: number) => Math.max(Math.abs(ax - bx), Math.abs(ay - by));
 
 /**
  * 3.3 視線が通るか。2点を結ぶ線の途中に視線を遮る地形（森）があれば通らない。
@@ -84,7 +120,7 @@ function hasLineOfSight(terrain: readonly TerrainId[], width: number, fromX: num
 export function visibleCells(state: GameState, player: PlayerState): number[] {
   const { width, height, terrain } = state.map;
   const here = terrain[cellIndex(state, player.x, player.y)];
-  const radius = visionRadius(here, phaseOf(state.turn));
+  const radius = visionRadius(here, phaseOf(state.turn), hasItem(player, 'torch'));
   const seesOver = TERRAIN[here].seesOverBlocks;
   const cells: number[] = [];
   for (let y = Math.max(0, player.y - radius); y <= Math.min(height - 1, player.y + radius); y++) {
@@ -100,14 +136,16 @@ function refreshMemory(state: GameState, player: PlayerState) {
 }
 
 /** 8.1 行動値 ＝ 機敏さ ＋ 1d6 ＋ 修正。同値は機敏さ、それも同じならランダム */
-function rollInitiative(players: PlayerState[], rng: Rng): InitiativeEntry[] {
+function rollInitiative(players: PlayerState[], rng: Rng, turn = 1): InitiativeEntry[] {
   const rolled = players
     .filter((player) => player.alive)
     .map((player) => {
       const agility = DEFAULT_AGILITY;
       const badlyHurt = player.hp <= INITIAL_HP / 2 ? INITIATIVE_MODIFIER.badlyHurt : 0;
       const overloaded = isInventoryFull(player) ? INITIATIVE_MODIFIER.overloaded : 0;
-      const value = agility + rng.int(1, 6) + badlyHurt + overloaded;
+      const weak = isWeak(player) ? INITIATIVE_MODIFIER.weak : 0;
+      const rested = player.restedTurn === turn - 1 && turn > 1 ? INITIATIVE_MODIFIER.rested : 0;
+      const value = agility + rng.int(1, 6) + badlyHurt + overloaded + weak + rested;
       return { entry: { playerId: player.id, value, agility }, tiebreak: rng.next() };
     });
   rolled.sort(
@@ -145,6 +183,17 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     dryStreak: 0,
     nestBonus: false,
     attackedOnTurn: 0,
+    hunger: INITIAL_HUNGER,
+    water: INITIAL_WATER,
+    poisonTurns: 0,
+    bleeding: false,
+    bleedTicks: 0,
+    fatiguedNext: false,
+    tired: false,
+    hidden: false,
+    guardTurn: 0,
+    ambushTurn: 0,
+    restedTurn: 0,
   }));
   const initiative = rollInitiative(players, rng);
   const state: GameState = {
@@ -158,6 +207,10 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     depletion: new Array(cellCount).fill(0),
     looted: new Array(cellCount).fill(false),
     relics: {},
+    structures: {},
+    letters: {},
+    whisperIntents: [],
+    whispers: [],
     players,
   };
   for (const player of state.players) refreshMemory(state, player);
@@ -195,10 +248,29 @@ function receive(player: PlayerState, stacks: ItemStack[]) {
   return { gained, lost };
 }
 
-function rollItem(rng: Rng, rolls: ItemRoll[]): ItemStack {
+/** 7.2 道具補正。石斧で木材が倍、釣竿で魚が増える */
+function rollItem(rng: Rng, rolls: ItemRoll[], player: PlayerState): ItemStack {
   const roll = rng.pick(rolls);
-  return { item: roll.item, count: rng.int(roll.min, roll.max) };
+  let count = rng.int(roll.min, roll.max);
+  if (roll.item === 'wood' && hasItem(player, 'stone_axe')) count *= 2;
+  if (roll.item === 'fish' && hasItem(player, 'fishing_rod')) count += 1;
+  return { item: roll.item, count };
 }
+
+function removeItem(player: PlayerState, item: ItemId, count: number) {
+  let remaining = count;
+  for (let i = player.inventory.length - 1; i >= 0 && remaining > 0; i--) {
+    const stack = player.inventory[i];
+    if (stack.item !== item) continue;
+    const taken = Math.min(remaining, stack.count);
+    stack.count -= taken;
+    remaining -= taken;
+    if (stack.count === 0) player.inventory.splice(i, 1);
+  }
+}
+
+const countItem = (player: PlayerState, item: ItemId) =>
+  player.inventory.reduce((sum, stack) => sum + (stack.item === item ? stack.count : 0), 0);
 
 const yieldsNothing = (entry: GatherEntry, player: PlayerState) =>
   entry.kind === 'nothing' ||
@@ -252,7 +324,7 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
     events.push({ type: 'gatherNothing', playerId, terrain, missingTool: true });
   } else {
     player.dryStreak = 0;
-    events.push({ type: 'gathered', playerId, terrain, pity, ...receive(player, [rollItem(rng, entry.rolls)]) });
+    events.push({ type: 'gathered', playerId, terrain, pity, ...receive(player, [rollItem(rng, entry.rolls, player)]) });
   }
 }
 
@@ -261,9 +333,12 @@ function gatherWater(player: PlayerState, terrain: TerrainId, rng: Rng, events: 
   const playerId = player.id;
   const stacks: ItemStack[] = [];
   if (hasAny(player, [CANTEEN])) stacks.push({ item: 'water', count: 1 });
-  else events.push({ type: 'drank', playerId, terrain });
+  else {
+    player.water = Math.min(MAX_WATER, player.water + DRINK_AT_SOURCE);
+    events.push({ type: 'drank', playerId, terrain });
+  }
   if (terrain === 'river' && hasAny(player, FISHING_TOOLS) && rng.next() < RIVER_FISH_CHANCE) {
-    stacks.push({ item: 'fish', count: 1 });
+    stacks.push({ item: 'fish', count: hasItem(player, 'fishing_rod') ? 2 : 1 });
   }
   if (stacks.length > 0) events.push({ type: 'gathered', playerId, terrain, pity: false, ...receive(player, stacks) });
 }
@@ -285,7 +360,7 @@ function gatherSpecial(
   }
   state.looted[index] = true;
   player.dryStreak = 0;
-  events.push({ type: 'gathered', playerId, terrain: kind, pity: false, ...receive(player, [rollItem(rng, SPECIAL_LOOT[kind])]) });
+  events.push({ type: 'gathered', playerId, terrain: kind, pity: false, ...receive(player, [rollItem(rng, SPECIAL_LOOT[kind], player)]) });
 }
 
 /** 2.3 脱落。所持品はそのマスに遺品として残る */
@@ -309,25 +384,27 @@ function takeRelics(state: GameState, player: PlayerState, events: GameEvent[]) 
   if (gained.length > 0) events.push({ type: 'relicTaken', playerId: player.id, items: gained });
 }
 
-/** 持っている中で一番強い武器。なければ素手 */
-function bestWeapon(player: PlayerState): WeaponDef {
+/** 使える武器を強い順に並べる。夜は遠距離武器を使えない。素手は必ず入る */
+function weaponsBestFirst(player: PlayerState, night: boolean): WeaponDef[] {
   const expected = (w: WeaponDef) => w.hit * ((w.rollsD3 ? 2 : 0) + w.bonus);
-  let best = UNARMED;
-  for (const { item } of player.inventory) {
+  const owned = player.inventory.flatMap(({ item }) => {
     const weapon = WEAPONS[item];
-    if (weapon && expected(weapon) > expected(best)) best = weapon;
-  }
-  return best;
+    return weapon && !(night && weapon.ranged) ? [weapon] : [];
+  });
+  return [...owned, UNARMED].sort((a, b) => expected(b) - expected(a));
 }
 
-const inRange = (ax: number, ay: number, bx: number, by: number, range: number) =>
-  Math.max(Math.abs(ax - bx), Math.abs(ay - by)) <= range;
+function inRange(ax: number, ay: number, bx: number, by: number, weapon: WeaponDef) {
+  if (chebyshev(ax, ay, bx, by) > weapon.range) return false;
+  if (!weapon.straightOnly) return true;
+  return ax === bx || ay === by || Math.abs(ax - bx) === Math.abs(ay - by);
+}
 
 /**
  * 追跡攻撃。使えるAPの中で一番安く相手に届く道を探す。
  * 今いる場所から届くなら空の道、どうしても届かなければ null を返す。
  */
-function chasePath(state: GameState, player: PlayerState, target: PlayerState, range: number, budget: number) {
+function chasePath(state: GameState, player: PlayerState, target: PlayerState, weapon: WeaponDef, budget: number) {
   const { width, height, terrain } = state.map;
   const start = cellIndex(state, player.x, player.y);
   const costs = new Map<number, number>([[start, 0]]);
@@ -342,7 +419,7 @@ function chasePath(state: GameState, player: PlayerState, target: PlayerState, r
     const x = current % width;
     const y = Math.floor(current / width);
     const cost = costs.get(current)!;
-    if (inRange(x, y, target.x, target.y, range) && cost < goalCost) {
+    if (inRange(x, y, target.x, target.y, weapon) && cost < goalCost) {
       goal = current;
       goalCost = cost;
       break;
@@ -367,7 +444,144 @@ function chasePath(state: GameState, player: PlayerState, target: PlayerState, r
   return path;
 }
 
-function resolveAttack(state: GameState, player: PlayerState, targetId: number, rng: Rng, events: GameEvent[]) {
+/** マスに着いたときに起きること。遺品、隠れている人、罠、待ち伏せ */
+function arrive(state: GameState, player: PlayerState, rng: Rng, events: GameEvent[]) {
+  takeRelics(state, player, events);
+  const index = cellIndex(state, player.x, player.y);
+
+  for (const other of state.players) {
+    if (other.id !== player.id && other.alive && other.hidden && other.x === player.x && other.y === player.y) {
+      other.hidden = false;
+      events.push({ type: 'foundOut', playerId: other.id });
+      events.push({ type: 'spotted', playerId: player.id, x: other.x, y: other.y });
+    }
+  }
+
+  const structure = state.structures[index];
+  if (structure?.kind === 'trap' && structure.ownerId !== player.id) {
+    delete state.structures[index];
+    events.push({ type: 'trapSprung', playerId: structure.ownerId, x: player.x, y: player.y });
+    // 6章 警戒していれば罠を見つけられる
+    if (player.guardTurn === state.turn) {
+      events.push({ type: 'trapDisarmed', playerId: player.id });
+    } else {
+      player.hp = Math.max(0, player.hp - TRAP_DAMAGE);
+      player.ap = 0;
+      events.push({ type: 'trapTriggered', playerId: player.id, damage: TRAP_DAMAGE });
+      if (player.hp === 0) {
+        eliminate(state, player);
+        return;
+      }
+    }
+  }
+
+  // 8.2 待ち伏せは行動順に関係なく割り込む
+  for (const other of state.players) {
+    if (other.id === player.id || !other.alive || !player.alive) continue;
+    if (other.ambushTurn !== state.turn || other.attackedOnTurn === state.turn) continue;
+    if (other.x !== player.x || other.y !== player.y) continue;
+    other.attackedOnTurn = state.turn;
+    other.hidden = false;
+    strike(state, other, player, weaponsBestFirst(other, phaseOf(state.turn) === 'night')[0], rng, events, true);
+  }
+}
+
+/** 8.2 8.3 命中判定からダメージ、反撃、略奪、脱落まで */
+function strike(
+  state: GameState,
+  attacker: PlayerState,
+  target: PlayerState,
+  weapon: WeaponDef,
+  rng: Rng,
+  events: GameEvent[],
+  ambush: boolean,
+) {
+  const distance = chebyshev(attacker.x, attacker.y, target.x, target.y);
+  const diagonal = attacker.x !== target.x && attacker.y !== target.y;
+  const night = phaseOf(state.turn) === 'night';
+  const guarding = target.guardTurn === state.turn;
+  const targetTerrain = state.map.terrain[cellIndex(state, target.x, target.y)];
+  const hitChance =
+    weapon.hit +
+    (night && !weapon.ranged ? COMBAT.nightMeleeHit : 0) +
+    (diagonal ? COMBAT.diagonalHit : 0) +
+    (guarding ? COMBAT.guardHit : 0) +
+    (weapon.ranged && targetTerrain === 'forest' ? COMBAT.rangedIntoForest : 0);
+  const hit = rng.next() < hitChance;
+
+  let damage = 0;
+  let stolen: ItemStack | null = null;
+  let counter = 0;
+  let bleeding = false;
+  if (hit) {
+    const raw =
+      (weapon.rollsD3 ? rng.int(1, 3) : 0) +
+      weapon.bonus +
+      (diagonal ? COMBAT.diagonalDamage : 0) -
+      (targetTerrain === 'rock' ? COMBAT.rockDefense : 0);
+    damage = Math.max(0, Math.max(1, raw) - (guarding ? COMBAT.guardDamage : 0));
+    target.hp = Math.max(0, target.hp - damage);
+
+    // 5章 出血。傷を負わなければ血は出ない
+    if (damage > 0 && weapon.bleed > 0 && !target.bleeding && rng.next() < weapon.bleed) {
+      target.bleeding = true;
+      target.bleedTicks = 0;
+      bleeding = true;
+    }
+
+    // 8.3 略奪。武器は対象外で、持てなければ奪えない。離れた所からは奪えない
+    const candidates = distance <= 1 ? target.inventory.filter((stack) => !WEAPONS[stack.item]) : [];
+    if (candidates.length > 0) {
+      const stack = rng.pick(candidates);
+      if (addItem(attacker, stack.item, 1) === 0) {
+        stolen = { item: stack.item, count: 1 };
+        stack.count -= 1;
+        if (stack.count === 0) target.inventory.splice(target.inventory.indexOf(stack), 1);
+      }
+    }
+
+    // 8.1 先手の利。これから手番が来る相手はAPが減る
+    const order = state.initiative.map((entry) => entry.playerId);
+    if (damage >= COMBAT.firstStrikeDamage && order.indexOf(target.id) > order.indexOf(attacker.id)) {
+      target.ap = Math.max(0, target.ap - 1);
+    }
+
+    if (target.hp === 0) {
+      eliminate(state, target);
+    } else if (distance === 0 && rng.next() < COMBAT.counterChance) {
+      // 8.3 反撃。殴り返せるのは同じマスにいるときだけ
+      counter = COMBAT.counterDamage;
+      attacker.hp = Math.max(0, attacker.hp - counter);
+    }
+  }
+
+  events.push({
+    type: 'attackResult',
+    attackerId: attacker.id,
+    targetId: target.id,
+    x: target.x,
+    y: target.y,
+    hit,
+    damage,
+    counter,
+    stolen,
+    ambush,
+    bleeding,
+    bottleBroke: weapon === BOTTLE,
+  });
+  if (attacker.hp === 0) eliminate(state, attacker);
+  // 8.3 とどめを刺した人は遺品を優先して拾える
+  else if (!target.alive && distance === 0) takeRelics(state, attacker, events);
+}
+
+function resolveAttack(
+  state: GameState,
+  player: PlayerState,
+  targetId: number,
+  choice: { throwStone: boolean; useBottle: boolean },
+  rng: Rng,
+  events: GameEvent[],
+) {
   const playerId = player.id;
   if (state.turn <= EARLY_PROTECTION_TURNS) {
     events.push({ type: 'blocked', playerId, reason: 'protected' });
@@ -383,12 +597,32 @@ function resolveAttack(state: GameState, player: PlayerState, targetId: number, 
   }
 
   const target = state.players[targetId];
-  const weapon = bestWeapon(player);
-  const path = target?.alive && target.id !== playerId
-    ? chasePath(state, player, target, weapon.range, player.ap - ATTACK_AP)
-    : null;
+  const night = phaseOf(state.turn) === 'night';
+  // 投石と瓶は自分で選んだときだけ使う。持っていなければ不発
+  const candidates = choice.throwStone
+    ? !night && hasItem(player, THROW_ITEM) ? [THROW] : []
+    : choice.useBottle
+      ? hasItem(player, BOTTLE_ITEM) ? [BOTTLE] : []
+      : weaponsBestFirst(player, night);
+  // 隠れている相手は、同じマスにいるときしか狙えない
+  const reachable =
+    target?.alive && target.id !== playerId && (!target.hidden || (target.x === player.x && target.y === player.y));
+
+  let weapon: WeaponDef | null = null;
+  let path: number[] | null = null;
+  if (reachable) {
+    for (const candidate of candidates) {
+      path = chasePath(state, player, target, candidate, player.ap - ATTACK_AP);
+      if (path) {
+        weapon = candidate;
+        break;
+      }
+    }
+  }
+
   player.attackedOnTurn = state.turn;
-  if (!path) {
+  player.hidden = false;
+  if (!weapon || !path) {
     player.ap -= ATTACK_AP;
     events.push({ type: 'attackFizzled', playerId });
     return;
@@ -402,69 +636,119 @@ function resolveAttack(state: GameState, player: PlayerState, targetId: number, 
     player.ap -= cost;
     refreshMemory(state, player);
     events.push({ type: 'moved', playerId, x: player.x, y: player.y, terrain, cost });
-    takeRelics(state, player, events);
+    arrive(state, player, rng, events);
+    // 罠や待ち伏せで止められた
+    if (!player.alive || player.ap < ATTACK_AP) return;
   }
+  if (!target.alive) return;
   player.ap -= ATTACK_AP;
+  if (weapon === THROW) removeItem(player, THROW_ITEM, 1);
+  if (weapon === BOTTLE) removeItem(player, BOTTLE_ITEM, 1);
+  strike(state, player, target, weapon, rng, events, false);
+}
 
-  // 8.2 8.3 命中とダメージ
-  const diagonal = player.x !== target.x && player.y !== target.y;
-  const night = phaseOf(state.turn) === 'night';
-  const hitChance =
-    weapon.hit + (night ? COMBAT.nightMeleeHit : 0) + (diagonal ? COMBAT.diagonalHit : 0);
-  const hit = rng.next() < hitChance;
+/** 6.1 手紙やチャットの文字から、制御文字を除いて長さをそろえる */
+export function cleanText(text: unknown, maxLength: number): string {
+  if (typeof text !== 'string') return '';
+  return Array.from(text.replace(/\p{C}/gu, ' ').trim()).slice(0, maxLength).join('');
+}
 
-  let damage = 0;
-  let stolen: ItemStack | null = null;
-  let counter = 0;
-  if (hit) {
-    const onRock = state.map.terrain[cellIndex(state, target.x, target.y)] === 'rock';
-    const raw =
-      (weapon.rollsD3 ? rng.int(1, 3) : 0) +
-      weapon.bonus +
-      (diagonal ? COMBAT.diagonalDamage : 0) -
-      (onRock ? COMBAT.rockDefense : 0);
-    damage = Math.max(1, raw);
-    target.hp = Math.max(0, target.hp - damage);
-
-    // 8.3 略奪。武器は対象外で、持てなければ奪えない
-    const candidates = target.inventory.filter((stack) => !WEAPONS[stack.item]);
-    if (candidates.length > 0) {
-      const stack = rng.pick(candidates);
-      if (addItem(player, stack.item, 1) === 0) {
-        stolen = { item: stack.item, count: 1 };
-        stack.count -= 1;
-        if (stack.count === 0) target.inventory.splice(target.inventory.indexOf(stack), 1);
-      }
-    }
-
-    // 8.1 先手の利。これから手番が来る相手はAPが減る
-    const order = state.initiative.map((entry) => entry.playerId);
-    if (damage >= COMBAT.firstStrikeDamage && order.indexOf(target.id) > order.indexOf(playerId)) {
-      target.ap = Math.max(0, target.ap - 1);
-    }
-
-    if (target.hp === 0) {
-      eliminate(state, target);
-    } else if (rng.next() < COMBAT.counterChance) {
-      counter = COMBAT.counterDamage;
-      player.hp = Math.max(0, player.hp - counter);
-    }
+function useItem(player: PlayerState, item: ItemId, rng: Rng, events: GameEvent[]) {
+  const playerId = player.id;
+  const effect = ITEMS[item].use;
+  if (!effect || countItem(player, item) === 0) {
+    events.push({ type: 'blocked', playerId, reason: 'notOwned' });
+    return;
   }
+  removeItem(player, item, 1);
+  const hunger = Math.min(MAX_HUNGER - player.hunger, effect.hunger ?? 0);
+  const water = Math.min(MAX_WATER - player.water, effect.water ?? 0);
+  const hp = Math.min(INITIAL_HP - player.hp, effect.hp ?? 0);
+  player.hunger += hunger;
+  player.water += water;
+  player.hp += hp;
+  const poisoned = !!effect.risky && rng.next() < POISON.chance;
+  if (poisoned) player.poisonTurns = POISON.turns;
+  if (effect.leaves) addItem(player, effect.leaves, 1);
+  const stoppedBleeding = !!effect.stopsBleeding && player.bleeding;
+  if (stoppedBleeding) {
+    player.bleeding = false;
+    player.bleedTicks = 0;
+  }
+  events.push({ type: 'used', playerId, item, hunger, water, hp, poisoned, stoppedBleeding });
+}
 
-  events.push({
-    type: 'attackResult',
-    attackerId: playerId,
-    targetId: target.id,
-    x: target.x,
-    y: target.y,
-    hit,
-    damage,
-    counter,
-    stolen,
-  });
-  if (player.hp === 0) eliminate(state, player);
-  // 8.3 とどめを刺した人は遺品を優先して拾える
-  else if (!target.alive) takeRelics(state, player, events);
+/** 行動の種類ごとの疲れやすさ。実際にAPを使ったときだけ起きる */
+function fatigueChance(action: Action, apSpent: number): number {
+  if (apSpent <= 0) return 0;
+  switch (action.type) {
+    case 'move':
+      return FATIGUE.movePerAp * apSpent;
+    case 'gather':
+      return FATIGUE.gather;
+    case 'attack':
+      return FATIGUE.attack;
+    case 'craft':
+      return RECIPES[action.recipe].builds ? FATIGUE.build : FATIGUE.craft;
+    default:
+      return 0;
+  }
+}
+
+function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: Rng, events: GameEvent[]) {
+  const playerId = player.id;
+  const recipe = RECIPES[recipeId];
+  if (player.ap < recipe.ap) {
+    events.push({ type: 'blocked', playerId, reason: 'noAp' });
+    return;
+  }
+  const inputs = recipe.inputs.find((set) => set.every(({ item, count }) => countItem(player, item) >= count));
+  if (!inputs) {
+    events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
+    return;
+  }
+  const index = cellIndex(state, player.x, player.y);
+  if (recipe.builds && state.structures[index]) {
+    events.push({ type: 'blocked', playerId, reason: 'occupied' });
+    return;
+  }
+  // 持ちきれない物を作って素材を失わないよう、入るかどうかを先に確かめる
+  const before = player.inventory.map((stack) => ({ ...stack }));
+  for (const { item, count } of inputs) removeItem(player, item, count);
+  if (recipe.output && addItem(player, recipe.output.item, recipe.output.count) > 0) {
+    player.inventory = before;
+    events.push({ type: 'blocked', playerId, reason: 'inventoryFull' });
+    return;
+  }
+  player.ap -= recipe.ap;
+  if (recipe.builds) state.structures[index] = { kind: recipe.builds, ownerId: playerId };
+  events.push({ type: 'crafted', playerId, recipe: recipeId, gained: recipe.output ? [recipe.output] : [], lost: [] });
+  // 出血しているなら、作った包帯をそのまま巻く
+  if (recipe.output && ITEMS[recipe.output.item].use?.stopsBleeding && player.bleeding) {
+    useItem(player, recipe.output.item, rng, events);
+  }
+}
+
+/** 6.1 相手が応じたら密談を始める。本人以外や終わった密談には何もしない */
+export function respondWhisper(previous: GameState, playerId: number, id: number, accept: boolean): GameState | null {
+  const whisper = previous.whispers.find((w) => w.id === id);
+  if (!whisper || whisper.to !== playerId || whisper.status !== 'pending') return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  state.whispers.find((w) => w.id === id)!.status = accept ? 'open' : 'refused';
+  return state;
+}
+
+/** 6.1 1回の密談で各3メッセージ、50文字まで */
+export function sendWhisper(previous: GameState, playerId: number, id: number, text: unknown): GameState | null {
+  const whisper = previous.whispers.find((w) => w.id === id);
+  if (!whisper || whisper.status !== 'open') return null;
+  if (whisper.from !== playerId && whisper.to !== playerId) return null;
+  const sent = whisper.messages.filter((message) => message.from === playerId).length;
+  const clean = cleanText(text, WHISPER.maxLength);
+  if (sent >= WHISPER.maxMessagesEach || !clean) return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  state.whispers.find((w) => w.id === id)!.messages.push({ from: playerId, text: clean });
+  return state;
 }
 
 export function applyAction(previous: GameState, action: Action): ActionResult {
@@ -477,12 +761,43 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     if ((state.turn - 1) % DEPLETION.recoverEveryTurns === 0) {
       state.depletion = state.depletion.map((d) => Math.max(0, d - 1));
     }
+    // 2.4 開始フェーズ。満腹度と水分は昼ターンにだけ減る。0のときのダメージは毎ターン
+    const isDay = phaseOf(state.turn) === 'day';
     for (const player of state.players) {
       if (!player.alive) continue;
-      player.ap = AP_PER_TURN;
+      if (isDay) {
+        player.hunger = Math.max(0, player.hunger - 1);
+        player.water = Math.max(0, player.water - 1);
+      }
+      const hunger = player.hunger === 0 ? STATUS_DAMAGE.starving : 0;
+      const thirst = player.water === 0 ? STATUS_DAMAGE.thirsty : 0;
+      const poison = player.poisonTurns > 0 ? STATUS_DAMAGE.poison : 0;
+      const bleed = player.bleeding ? STATUS_DAMAGE.bleed : 0;
+      if (player.poisonTurns > 0) player.poisonTurns -= 1;
+      if (hunger + thirst + poison + bleed > 0) {
+        player.hp = Math.max(0, player.hp - hunger - thirst - poison - bleed);
+        events.push({ type: 'statusDamage', playerId: player.id, hunger, thirst, poison, bleed });
+        if (player.hp === 0) {
+          eliminate(state, player);
+          continue;
+        }
+      }
+      // 1回目のダメージは必ず受け、そのあとは回を重ねるほど止まりやすくなる
+      if (player.bleeding) {
+        const chance = BLEED_CONTINUE_CHANCE[player.bleedTicks] ?? 0;
+        player.bleedTicks += 1;
+        if (rng.next() >= chance) {
+          player.bleeding = false;
+          player.bleedTicks = 0;
+          events.push({ type: 'bleedStopped', playerId: player.id });
+        }
+      }
+      player.tired = player.fatiguedNext;
+      player.fatiguedNext = false;
+      player.ap = AP_PER_TURN - (isWeak(player) ? 1 : 0) - (player.tired ? 1 : 0);
       refreshMemory(state, player);
     }
-    state.initiative = rollInitiative(state.players, rng);
+    state.initiative = rollInitiative(state.players, rng, state.turn);
     state.rngState = rng.state;
     events.push({ type: 'turnStarted', turn: state.turn, day: dayOf(state.turn), phase: phaseOf(state.turn) });
     return { state, events };
@@ -494,6 +809,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     events.push({ type: 'blocked', playerId, reason: 'eliminated' });
     return { state, events };
   }
+  const apBefore = player.ap;
 
   switch (action.type) {
     case 'move': {
@@ -523,20 +839,117 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       player.x = x;
       player.y = y;
       player.ap -= cost;
+      player.hidden = false;
       refreshMemory(state, player);
       events.push({ type: 'moved', playerId, x, y, terrain, cost });
-      takeRelics(state, player, events);
+      arrive(state, player, rng, events);
       break;
     }
     case 'attack':
-      resolveAttack(state, player, action.targetId, rng, events);
+      resolveAttack(
+        state,
+        player,
+        action.targetId,
+        { throwStone: !!action.throwStone, useBottle: !!action.useBottle },
+        rng,
+        events,
+      );
       break;
+    case 'use':
+      useItem(player, action.item, rng, events);
+      break;
+    case 'craft':
+      craft(state, player, action.recipe, rng, events);
+      break;
+    case 'rest': {
+      if (player.ap <= 0) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+        break;
+      }
+      const inHut = state.structures[cellIndex(state, player.x, player.y)]?.kind === 'hut';
+      const healed = Math.min(INITIAL_HP - player.hp, player.ap * (inHut ? REST_HUT_MULTIPLIER : 1));
+      player.hp += healed;
+      player.ap = 0;
+      player.restedTurn = state.turn;
+      // 休めば次のターンに疲れを持ち越さない
+      player.fatiguedNext = false;
+      events.push({ type: 'rested', playerId, healed });
+      break;
+    }
+    case 'guard': {
+      if (player.ap < GUARD_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+        break;
+      }
+      player.ap -= GUARD_AP;
+      player.guardTurn = state.turn;
+      events.push({ type: 'guarded', playerId });
+      // 6章 隣のマスに隠れている人も見つける
+      for (const other of state.players) {
+        if (other.id === playerId || !other.alive || !other.hidden) continue;
+        if (chebyshev(player.x, player.y, other.x, other.y) > 1) continue;
+        other.hidden = false;
+        events.push({ type: 'foundOut', playerId: other.id });
+        events.push({ type: 'spotted', playerId, x: other.x, y: other.y });
+      }
+      break;
+    }
+    case 'hide': {
+      if (player.ap < HIDE_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else if (!TERRAIN[state.map.terrain[cellIndex(state, player.x, player.y)]].canHide) {
+        events.push({ type: 'blocked', playerId, reason: 'cannotHide' });
+      } else {
+        player.ap -= HIDE_AP;
+        player.hidden = true;
+        events.push({ type: 'hid', playerId });
+      }
+      break;
+    }
+    case 'ambush': {
+      if (state.turn <= EARLY_PROTECTION_TURNS) {
+        events.push({ type: 'blocked', playerId, reason: 'protected' });
+      } else if (player.ap < AMBUSH_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else {
+        player.ap -= AMBUSH_AP;
+        player.ambushTurn = state.turn;
+        events.push({ type: 'ambushSet', playerId });
+      }
+      break;
+    }
+    case 'letter': {
+      const text = cleanText(action.text, LETTER.maxLength);
+      if (player.ap < LETTER_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else if (!text || countItem(player, LETTER.material) === 0) {
+        events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
+      } else {
+        player.ap -= LETTER_AP;
+        removeItem(player, LETTER.material, 1);
+        const index = cellIndex(state, player.x, player.y);
+        state.letters[index] = [...(state.letters[index] ?? []), { text }];
+        events.push({ type: 'letterLeft', playerId });
+      }
+      break;
+    }
+    case 'whisper': {
+      if (player.ap < WHISPER_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else {
+        player.ap -= WHISPER_AP;
+        state.whisperIntents.push({ from: playerId, to: action.targetId });
+        events.push({ type: 'whisperAsked', playerId });
+      }
+      break;
+    }
     case 'gather': {
       if (player.ap < GATHER_AP) {
         events.push({ type: 'blocked', playerId, reason: 'noAp' });
         break;
       }
       player.ap -= GATHER_AP;
+      player.hidden = false;
       const index = cellIndex(state, player.x, player.y);
       const terrain = state.map.terrain[index];
       if (terrain === 'spring' || terrain === 'river') gatherWater(player, terrain, rng, events);
@@ -558,6 +971,13 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     }
   }
 
+  // 5章 疲労。もう疲れているときは振らない
+  const chance = fatigueChance(action, apBefore - player.ap);
+  if (chance > 0 && player.alive && !player.fatiguedNext && rng.next() < chance) {
+    player.fatiguedNext = true;
+    events.push({ type: 'fatigued', playerId });
+  }
+
   state.rngState = rng.state;
   return { state, events };
 }
@@ -568,8 +988,8 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
  */
 export function resolveTurn(previous: GameState, plans: Record<number, PlanAction[]>): TurnResolution {
   const targetRng = new Rng(previous.rngState);
-  /** 攻撃の相手は計画のときの位置で決める。夜の人影が重なっていたら、誰に当たるかは運 */
-  const targetOf = (attackerId: number, action: Extract<PlanAction, { type: 'attack' }>) => {
+  /** 攻撃や密談の相手は計画のときの位置で決める。夜の人影が重なっていたら、誰に当たるかは運 */
+  const targetOf = (attackerId: number, action: { x: number; y: number; who?: number }) => {
     if (action.who !== undefined) return action.who;
     const here = previous.players.filter(
       (p) => p.alive && p.id !== attackerId && p.x === action.x && p.y === action.y,
@@ -580,15 +1000,35 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
   for (const { playerId } of previous.initiative) {
     resolved.set(
       playerId,
-      (plans[playerId] ?? []).map((action): Action =>
-        action.type === 'attack'
-          ? { type: 'attack', playerId, targetId: targetOf(playerId, action) }
-          : { ...action, playerId },
-      ),
+      (plans[playerId] ?? []).map((action): Action => {
+        if (action.type === 'attack') {
+          return {
+            type: 'attack',
+            playerId,
+            targetId: targetOf(playerId, action),
+            throwStone: action.throwStone,
+            useBottle: action.useBottle,
+          };
+        }
+        if (action.type === 'whisper') return { type: 'whisper', playerId, targetId: targetOf(playerId, action) };
+        return { ...action, playerId };
+      }),
     );
   }
 
-  let state: GameState = { ...previous, rngState: targetRng.state };
+  let state: GameState = JSON.parse(JSON.stringify(previous));
+  state.rngState = targetRng.state;
+  // 密談は次の計画フェーズの間だけ
+  state.whispers = [];
+  state.whisperIntents = [];
+  // 防御と待ち伏せは予約なので、自分の手番より前に来た相手にも効く
+  for (const player of state.players) {
+    const plan = plans[player.id] ?? [];
+    if (plan.some((action) => action.type === 'guard')) player.guardTurn = state.turn;
+    if (plan.some((action) => action.type === 'ambush') && state.turn > EARLY_PROTECTION_TURNS) {
+      player.ambushTurn = state.turn;
+    }
+  }
   const steps: ResolutionStep[] = [];
 
   for (const { playerId } of previous.initiative) {
@@ -617,19 +1057,45 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     }
   }
 
+  // 6.1 密談は解決フェーズ終了時点の位置で判定する
+  state = JSON.parse(JSON.stringify(state)) as GameState;
+  const whisperEvents: GameEvent[] = [];
+  for (const intent of state.whisperIntents) {
+    const from = state.players[intent.from];
+    const to = state.players[intent.to];
+    const near = to?.alive && from.alive && to.id !== from.id && chebyshev(from.x, from.y, to.x, to.y) <= 1;
+    if (near) {
+      state.whispers.push({ id: state.whispers.length, from: from.id, to: to.id, status: 'pending', messages: [] });
+    } else if (from.alive) {
+      whisperEvents.push({ type: 'whisperFailed', playerId: from.id });
+    }
+  }
+  state.whisperIntents = [];
+  if (whisperEvents.length > 0) steps.push({ actorId: null, events: whisperEvents, state });
+
   // 終了フェーズ。特殊勝利の判定はマイルストーン4で足す
-  const alive = state.players.filter((player) => player.alive);
-  const lastOneStanding = state.players.length > 1 && alive.length === 1;
-  if (lastOneStanding || alive.length === 0) {
+  const finish = () => {
+    const alive = state.players.filter((player) => player.alive);
+    const lastOneStanding = state.players.length > 1 && alive.length === 1;
+    if (!lastOneStanding && alive.length > 0) return false;
     state = JSON.parse(JSON.stringify(state)) as GameState;
     state.finished = true;
     state.winnerId = lastOneStanding ? alive[0].id : null;
     steps.push({ actorId: null, events: [{ type: 'gameFinished', winnerId: state.winnerId }], state });
-    return { state, steps };
-  }
+    return true;
+  };
+  if (finish()) return { state, steps };
 
+  const before = state;
   const next = applyAction(state, { type: 'endTurn' });
   state = next.state;
-  steps.push({ actorId: null, events: next.events, state });
+  const events = [...next.events];
+  for (const player of state.players) {
+    if (before.players[player.id].alive && !player.alive) {
+      events.push({ type: 'playerEliminated', playerId: player.id });
+    }
+  }
+  steps.push({ actorId: null, events, state });
+  finish();
   return { state, steps };
 }

@@ -1,19 +1,30 @@
 // 画面。サーバーから届いた見え方だけで描く。ルールの判定はサーバーが行い、画面は見込みの計算だけをする。
 import {
+  AMBUSH_AP,
   ATTACK_AP,
+  BOTTLE_ITEM,
   GATHER_AP,
+  GUARD_AP,
+  HIDE_AP,
   INVENTORY_SLOTS,
   isProtected,
   ITEMS,
+  LETTER,
   MAP_SIZE_NAMES,
   projectPlan,
+  RECIPES,
   TERRAIN,
+  THROW_ITEM,
+  WEAK_THRESHOLD,
+  WHISPER,
+  WHISPER_AP,
   type CellView,
   type Direction,
   type ItemId,
   type MapSize,
   type PlanAction,
   type PlayerView,
+  type RecipeId,
   type ReplayStep,
   type TerrainId,
 } from '../core/index';
@@ -75,6 +86,8 @@ let inviteUrl = '';
 /** URLで招待されている合言葉。別のルームの席が残っていても、こちらを優先する */
 let invitedCode = new URLSearchParams(location.search).get('room')?.trim().toUpperCase() ?? '';
 let switchingRoom = false;
+/** 書きかけの密談。画面を描き直しても消えないように持っておく */
+const whisperDrafts = new Map<number, string>();
 
 const net = new Net({
   onMessage: handleMessage,
@@ -171,6 +184,14 @@ function handleMessage(message: ServerMessage) {
     case 'status':
       status = message.status;
       if (view) renderOrder();
+      break;
+    case 'whisperUpdate':
+      if (view) {
+        view.whispers = message.whispers;
+        view.whisperSeen = message.whisperSeen;
+        renderWhispers(view);
+        view.cells.forEach((cell, i) => renderCell(cellButtons[i], cell, view!));
+      }
       break;
     case 'waiting':
       if (switchingRoom) break;
@@ -310,9 +331,17 @@ function tryAdd(action: PlanAction) {
   const projection = projectPlan(view, next);
   if (!projection.ok) {
     if (action.type === 'attack') {
-      toast(plan.some((a) => a.type === 'attack') ? '攻撃は1ターンに1回までです' : 'APが足りません');
+      toast(plan.some((a) => a.type === 'attack') ? '攻撃は1ターンに1回までです' : '予約できません（APか持ち物を確かめてください）');
+    } else if (action.type === 'move') {
+      toast(plan.some((a) => a.type === 'ambush') ? '待ち伏せと移動は一緒に予約できません' : describeRefusal(action));
+    } else if (action.type === 'hide') {
+      toast('隠れられるのは森と岩場だけです');
+    } else if (action.type === 'ambush') {
+      toast('待ち伏せは、動かず攻撃もしないターンにだけ予約できます');
+    } else if (action.type === 'craft') {
+      toast('APか素材が足りないか、持ち物がいっぱいか、ここには建てられません');
     } else {
-      toast(action.type === 'gather' ? 'APが足りません' : describeRefusal(action));
+      toast('APか持ち物が足りません');
     }
     return;
   }
@@ -369,30 +398,46 @@ function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellVie
     box.append(button);
   };
 
-  if (isProtected(current)) {
-    const note = document.createElement('p');
-    note.className = 'muted';
-    note.textContent = '最初の2日間は攻撃できない';
-    box.append(note);
-  } else {
-    const named = cell.figures.flatMap((f) => (f.kind === 'player' ? [f] : []));
-    for (const figure of named) {
-      add(`${figure.name}を攻撃（AP${ATTACK_AP}）`, () => {
+  // 昼は名前で選び、夜は人影としてマスを指定する
+  const targets: { label: string; who?: number }[] = cell.figures.flatMap((f) =>
+    f.kind === 'player' ? [{ label: f.name, who: f.id }] : [],
+  );
+  if (cell.figures.some((f) => f.kind === 'shadow')) targets.push({ label: '人影' });
+  const owned = projectPlan(current, plan).owned;
+  const canThrow = current.phase === 'day' && (owned[THROW_ITEM] ?? 0) > 0;
+  const hasBottle = (owned[BOTTLE_ITEM] ?? 0) > 0;
+
+  for (const target of targets) {
+    const spot = { x: cell.x, y: cell.y, ...(target.who === undefined ? {} : { who: target.who }) };
+    if (!isProtected(current)) {
+      add(`${target.label}を攻撃（AP${ATTACK_AP}）`, () => {
         inspected = null;
-        tryAdd({ type: 'attack', x: cell.x, y: cell.y, who: figure.id });
+        tryAdd({ type: 'attack', ...spot });
       }, 'btn btn-danger');
+      if (canThrow) {
+        add(`${target.label}に石を投げる（AP${ATTACK_AP}）`, () => {
+          inspected = null;
+          tryAdd({ type: 'attack', ...spot, throwStone: true });
+        }, 'btn btn-danger');
+      }
+      if (hasBottle) {
+        add(`${target.label}を瓶で殴る（AP${ATTACK_AP}・瓶は割れる）`, () => {
+          inspected = null;
+          tryAdd({ type: 'attack', ...spot, useBottle: true });
+        }, 'btn btn-danger');
+      }
     }
-    if (cell.figures.some((f) => f.kind === 'shadow')) {
-      add(`人影を攻撃（AP${ATTACK_AP}）`, () => {
-        inspected = null;
-        tryAdd({ type: 'attack', x: cell.x, y: cell.y });
-      }, 'btn btn-danger');
-    }
-    const note = document.createElement('p');
-    note.className = 'muted';
-    note.textContent = '相手が動いても、残りAPで届くなら追いかける。届かなければ不発でAP−1';
-    box.append(note);
+    add(`${target.label}に密談を持ちかける（AP${WHISPER_AP}）`, () => {
+      inspected = null;
+      tryAdd({ type: 'whisper', ...spot });
+    });
   }
+  const note = document.createElement('p');
+  note.className = 'muted';
+  note.textContent = isProtected(current)
+    ? '最初の2日間は攻撃できない'
+    : '相手が動いても、残りAPで届くなら追いかける。届かなければ不発でAP−1';
+  box.append(note);
 
   const from = projectPlan(current, plan);
   const direction = (Object.keys(DELTA) as Direction[]).find(
@@ -422,6 +467,7 @@ function renderCell(button: HTMLButtonElement, cell: CellView, current: PlayerVi
   if (canTarget && cost !== null && cost > from.ap) classes.push('too-far');
   if (onPath) classes.push('path');
   if (editing && !isProtected(current) && hasOthers(cell)) classes.push('can-attack');
+  if (current.whisperSeen.some((p) => p.x === cell.x && p.y === cell.y)) classes.push('whisper-seen');
   if (inspected?.x === cell.x && inspected.y === cell.y) classes.push('inspected');
   button.className = classes.join(' ');
 
@@ -438,7 +484,13 @@ function renderCell(button: HTMLButtonElement, cell: CellView, current: PlayerVi
   const badge = canTarget ? `<span class="cost">${cell.terrain ? cost : '?'}</span>` : '';
   const worn = cell.depletion ? `<span class="worn" data-level="${cell.depletion}"></span>` : '';
   const relic = cell.relic ? '<span class="relic" aria-label="遺品">✝</span>' : '';
-  button.innerHTML = `${label}${worn}${relic}${pieces}${ghost}${badge}`;
+  const structure =
+    cell.structure === 'hut'
+      ? '<span class="structure" aria-label="小屋">⌂</span>'
+      : cell.structure === 'trap'
+        ? '<span class="structure" aria-label="自分の罠">×</span>'
+        : '';
+  button.innerHTML = `${label}${worn}${relic}${structure}${pieces}${ghost}${badge}`;
   button.setAttribute('aria-label', cell.terrain ? TERRAIN[cell.terrain].name : '未探索');
 }
 
@@ -464,7 +516,185 @@ function renderInfo(current: PlayerView) {
     <p>${def.summary}</p>
     ${isHere ? `<p class="muted">視界 半径${current.me.visionRadius}マス</p>` : ''}
     ${worn}${memoryNote}`;
+  if (cell.structure) {
+    const note = document.createElement('p');
+    note.textContent = cell.structure === 'hut' ? '小屋がある（休息の回復が倍）' : '自分の置いた罠がある';
+    info.append(note);
+  }
+  if (isHere) {
+    // 手紙は誰が書いたか分からない自由入力なので textContent で出す
+    for (const text of current.letters) {
+      const letter = document.createElement('p');
+      letter.className = 'letter-note';
+      letter.textContent = `手紙：${text}`;
+      info.append(letter);
+    }
+  }
   appendCellActions(info, current, cell);
+}
+
+function renderWhispers(current: PlayerView) {
+  const hasAny = current.whispers.length > 0 || current.whisperSeen.length > 0;
+  $('whisper-card').hidden = !hasAny;
+  $('whisper-seen').hidden = current.whisperSeen.length === 0;
+  const focusedId = document.activeElement instanceof HTMLInputElement ? document.activeElement.dataset.whisper : undefined;
+
+  $('whisper-list').replaceChildren(
+    ...current.whispers.map((whisper) => {
+      const box = document.createElement('div');
+      box.className = 'whisper';
+      const partner = whisper.withId === null ? '人影' : nameOf(whisper.withId);
+      const title = document.createElement('p');
+      title.className = 'muted';
+      title.textContent = whisper.status === 'pending' ? `${partner}から密談の誘い` : `${partner}との密談`;
+      box.append(title);
+
+      if (whisper.status === 'refused') {
+        title.textContent = whisper.incoming ? `${partner}の誘いを断った` : `${partner}に断られた`;
+        return box;
+      }
+      if (whisper.status === 'pending') {
+        if (!whisper.incoming) {
+          title.textContent = `${partner}の返事を待っています…`;
+          return box;
+        }
+        const buttons = document.createElement('div');
+        buttons.className = 'whisper-buttons';
+        const accept = document.createElement('button');
+        accept.type = 'button';
+        accept.className = 'btn btn-small btn-primary';
+        accept.textContent = '応じる';
+        accept.addEventListener('click', () => net.send({ t: 'whisperRespond', id: whisper.id, accept: true }));
+        const refuse = document.createElement('button');
+        refuse.type = 'button';
+        refuse.className = 'btn btn-small';
+        refuse.textContent = '断る';
+        refuse.addEventListener('click', () => net.send({ t: 'whisperRespond', id: whisper.id, accept: false }));
+        buttons.append(accept, refuse);
+        box.append(buttons);
+        return box;
+      }
+
+      for (const message of whisper.messages) {
+        const line = document.createElement('p');
+        line.className = `whisper-line${message.mine ? ' mine' : ''}`;
+        line.textContent = message.text;
+        box.append(line);
+      }
+      const sent = whisper.messages.filter((m) => m.mine).length;
+      const left = WHISPER.maxMessagesEach - sent;
+      if (left <= 0 || !planning) {
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.textContent = '送れるメッセージはもうありません';
+        box.append(note);
+        return box;
+      }
+      const form = document.createElement('form');
+      form.className = 'whisper-form';
+      const input = document.createElement('input');
+      input.maxLength = WHISPER.maxLength;
+      input.autocomplete = 'off';
+      input.placeholder = `あと${left}通、${WHISPER.maxLength}文字まで`;
+      input.setAttribute('aria-label', '密談のメッセージ');
+      input.dataset.whisper = String(whisper.id);
+      input.value = whisperDrafts.get(whisper.id) ?? '';
+      input.addEventListener('input', () => whisperDrafts.set(whisper.id, input.value));
+      const send = document.createElement('button');
+      send.type = 'submit';
+      send.className = 'btn btn-small';
+      send.textContent = '送る';
+      form.append(input, send);
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        if (!input.value.trim()) return;
+        net.send({ t: 'whisperSend', id: whisper.id, text: input.value });
+        whisperDrafts.delete(whisper.id);
+        input.value = '';
+      });
+      box.append(form);
+      return box;
+    }),
+  );
+
+  if (focusedId !== undefined) {
+    document.querySelector<HTMLInputElement>(`input[data-whisper="${focusedId}"]`)?.focus();
+  }
+}
+
+/** 素材の表示。「木材×2、石×1」のように出す */
+function inputsText(id: RecipeId): string {
+  return RECIPES[id].inputs
+    .map((set) => set.map(({ item, count }) => `${ITEMS[item].name}×${count}`).join('、'))
+    .join(' または ');
+}
+
+function renderRecipes(current: PlayerView) {
+  const editing = canEdit();
+  $('recipes').replaceChildren(
+    ...(Object.keys(RECIPES) as RecipeId[]).map((id) => {
+      const recipe = RECIPES[id];
+      const row = document.createElement('li');
+      const info = document.createElement('div');
+      info.className = 'recipe-info';
+      const name = document.createElement('b');
+      name.textContent = `${recipe.name}（AP${recipe.ap}）`;
+      const detail = document.createElement('span');
+      detail.className = 'muted';
+      detail.textContent = `${inputsText(id)}。${recipe.summary}`;
+      info.append(name, detail);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-small';
+      button.textContent = recipe.builds ? '建てる' : '作る';
+      button.disabled = !editing || !projectPlan(current, [...plan, { type: 'craft', recipe: id }]).ok;
+      button.addEventListener('click', () => tryAdd({ type: 'craft', recipe: id }));
+      row.append(info, button);
+      return row;
+    }),
+  );
+  const canLetter = editing && projectPlan(current, [...plan, { type: 'letter', text: 'x' }]).ok;
+  $<HTMLButtonElement>('letter-add').disabled = !canLetter;
+}
+
+function renderVitals(current: PlayerView) {
+  const setValue = (id: string, value: number) => {
+    const element = $(id);
+    element.textContent = String(value);
+    element.classList.toggle('low', value <= WEAK_THRESHOLD);
+  };
+  setValue('hunger-value', current.me.hunger);
+  setValue('water-value', current.me.water);
+  const tags = [
+    current.me.bleeding ? '出血' : '',
+    current.me.poisoned ? '中毒' : '',
+    current.me.tired ? '疲労' : '',
+    current.me.weak ? '弱っている' : '',
+    current.me.hidden ? '隠れ中' : '',
+  ].filter(Boolean);
+  $('status-tags').replaceChildren(
+    ...tags.map((tag) => {
+      const element = document.createElement('span');
+      element.className = 'tag tag-off';
+      element.textContent = tag;
+      return element;
+    }),
+  );
+}
+
+function renderMoreActions(current: PlayerView) {
+  const editing = canEdit();
+  const can = (action: PlanAction) => editing && projectPlan(current, [...plan, action]).ok;
+  const setup = (id: string, label: string, action: PlanAction) => {
+    const button = $<HTMLButtonElement>(id);
+    button.textContent = label;
+    button.disabled = !can(action);
+  };
+  const ap = projectPlan(current, plan).ap;
+  setup('act-rest', `休息 ${Math.max(0, ap)}AP`, { type: 'rest' });
+  setup('act-guard', `防御 ${GUARD_AP}AP`, { type: 'guard' });
+  setup('act-hide', `隠れる ${HIDE_AP}AP`, { type: 'hide' });
+  setup('act-ambush', `待ち伏せ ${AMBUSH_AP}AP`, { type: 'ambush' });
 }
 
 function renderOrder() {
@@ -549,9 +779,13 @@ function render(centerOnPlayer: boolean) {
   ).join('');
   renderTimer();
 
+  renderVitals(current);
   renderOrder();
   renderPlan(current);
   renderInfo(current);
+  renderMoreActions(current);
+  renderWhispers(current);
+  renderRecipes(current);
 
   const editing = canEdit();
   $<HTMLButtonElement>('gather').disabled = !editing || projection.ap < GATHER_AP;
@@ -576,7 +810,8 @@ function render(centerOnPlayer: boolean) {
 function renderInventory(current: PlayerView) {
   const inventory = $('inventory');
   $('slot-count').textContent = `${current.me.inventory.length} / ${INVENTORY_SLOTS}枠`;
-  const planned = (item: ItemId) => plan.filter((a) => a.type === 'discard' && a.item === item).length;
+  const planned = (item: ItemId) =>
+    plan.filter((a) => (a.type === 'discard' || a.type === 'use') && a.item === item).length;
   inventory.replaceChildren(
     ...current.me.inventory.map((stack) => {
       const row = document.createElement('li');
@@ -585,7 +820,7 @@ function renderInventory(current: PlayerView) {
       const count = document.createElement('span');
       const left = stack.count - planned(stack.item);
       count.className = 'count';
-      count.textContent = left === stack.count ? `×${stack.count}` : `×${left}（捨てる予約）`;
+      count.textContent = left === stack.count ? `×${stack.count}` : `×${Math.max(0, left)}（予約済み）`;
       const drop = document.createElement('button');
       drop.type = 'button';
       drop.className = 'drop';
@@ -593,7 +828,19 @@ function renderInventory(current: PlayerView) {
       drop.disabled = !canEdit() || left <= 0;
       drop.setAttribute('aria-label', `${ITEMS[stack.item].name}を1つ捨てる`);
       drop.addEventListener('click', () => tryAdd({ type: 'discard', item: stack.item }));
-      row.append(name, count, drop);
+      row.append(name, count);
+      const effect = ITEMS[stack.item].use;
+      if (effect) {
+        const use = document.createElement('button');
+        use.type = 'button';
+        use.className = 'btn-use';
+        use.textContent = effect.hunger ? '食べる' : effect.water ? '飲む' : '使う';
+        use.disabled = !canEdit() || left <= 0;
+        use.setAttribute('aria-label', `${ITEMS[stack.item].name}を使う（AP0）`);
+        use.addEventListener('click', () => tryAdd({ type: 'use', item: stack.item }));
+        row.append(use);
+      }
+      row.append(drop);
       return row;
     }),
   );
@@ -718,6 +965,21 @@ $('copy-invite').addEventListener('click', async () => {
   }
 });
 
+$('act-rest').addEventListener('click', () => tryAdd({ type: 'rest' }));
+$('act-guard').addEventListener('click', () => tryAdd({ type: 'guard' }));
+$('act-hide').addEventListener('click', () => tryAdd({ type: 'hide' }));
+$('act-ambush').addEventListener('click', () => tryAdd({ type: 'ambush' }));
+$('letter-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = $<HTMLInputElement>('letter-text');
+  const text = input.value.trim().slice(0, LETTER.maxLength);
+  if (!text) {
+    toast('手紙の内容を入れてください');
+    return;
+  }
+  tryAdd({ type: 'letter', text });
+  if (plan.some((a) => a.type === 'letter' && a.text === text)) input.value = '';
+});
 $('gather').addEventListener('click', () => tryAdd({ type: 'gather' }));
 $('undo').addEventListener('click', undo);
 $('confirm').addEventListener('click', toggleReady);

@@ -326,6 +326,103 @@ describe('ルーム', () => {
     expect(clients[1].last('planning').view.turn).toBe(1);
   });
 
+  describe('密談', () => {
+    const tokens = new Map<FakeClient, string>();
+
+    /** 2人を隣に並べ、1人目が密談を持ちかけてターンを進める */
+    function whispering(count = 2) {
+      const { code, clients } = started(count);
+      const rooms = (manager as unknown as { rooms: Map<string, { state: any }> }).rooms;
+      const state = rooms.get(code)!.state;
+      const w = state.map.width;
+      const c = Math.floor(w / 2);
+      for (let y = c - 1; y <= c + 1; y++) for (let x = c - 1; x <= c + 1; x++) state.map.terrain[y * w + x] = 'grass';
+      state.players.forEach((p: any, i: number) => {
+        p.x = c + (i === 2 ? 0 : i);
+        p.y = c + (i === 2 ? 1 : 0);
+      });
+      state.turn = 2; // 解決すると昼になる
+      for (const c2 of clients) {
+        tokens.set(c2, c2.last('joined').token);
+        c2.inbox.length = 0;
+      }
+      // 今は夜なので、人影のいるマスを指定する
+      clients[0].say({ t: 'plan', actions: [{ type: 'whisper', x: c + 1, y: c }], ready: true });
+      for (const c2 of clients.slice(1)) c2.say({ t: 'plan', actions: [], ready: true });
+      vi.advanceTimersByTime(10_000);
+      return { clients, state: () => rooms.get(code)!.state };
+    }
+
+    it('次の計画フェーズで相手に誘いが届き、応じると話せる', () => {
+      const { clients } = whispering();
+      const [a, b] = clients;
+      expect(a.last('planning').view.whispers[0]).toMatchObject({ incoming: false, status: 'pending', withId: 1 });
+      expect(b.last('planning').view.whispers[0]).toMatchObject({ incoming: true, status: 'pending', withId: 0 });
+
+      b.say({ t: 'whisperRespond', id: 0, accept: true });
+      expect(a.last('whisperUpdate').whispers[0].status).toBe('open');
+
+      a.say({ t: 'whisperSend', id: 0, text: 'やあ' });
+      expect(b.last('whisperUpdate').whispers[0].messages).toEqual([{ mine: false, text: 'やあ' }]);
+      expect(a.last('whisperUpdate').whispers[0].messages).toEqual([{ mine: true, text: 'やあ' }]);
+    });
+
+    it('第三者に内容は届かず、見えていれば話していることだけが届く', () => {
+      const { clients } = whispering(3);
+      const [a, b, c] = clients;
+      b.say({ t: 'whisperRespond', id: 0, accept: true });
+      a.say({ t: 'whisperSend', id: 0, text: 'ひみつの話' });
+      const update = c.last('whisperUpdate');
+      expect(update.whispers).toEqual([]);
+      expect(update.whisperSeen.length).toBeGreaterThan(0);
+      expect(JSON.stringify(c.inbox)).not.toContain('ひみつの話');
+    });
+
+    it('他人の密談には返事も送信もできず、計画フェーズ以外は無視される', () => {
+      const { clients, state } = whispering(3);
+      const [a, b, c] = clients;
+      c.say({ t: 'whisperRespond', id: 0, accept: true });
+      expect(state().whispers[0].status).toBe('pending');
+      a.say({ t: 'whisperRespond', id: 0, accept: true });
+      expect(state().whispers[0].status).toBe('pending');
+      b.say({ t: 'whisperRespond', id: 'x' as never, accept: true });
+      expect(state().whispers[0].status).toBe('pending');
+      b.say({ t: 'whisperRespond', id: 0, accept: true });
+      c.say({ t: 'whisperSend', id: 0, text: '横から' });
+      expect(state().whispers[0].messages).toEqual([]);
+    });
+
+    it('再接続しても密談の続きが届く', () => {
+      const { clients } = whispering();
+      const [a, b] = clients;
+      b.say({ t: 'whisperRespond', id: 0, accept: true });
+      a.say({ t: 'whisperSend', id: 0, text: 'こんにちは' });
+      const token = tokens.get(b)!;
+      manager.disconnected(b);
+      const back = new FakeClient(manager);
+      back.say({ t: 'resume', token });
+      expect(back.last('planning').view.whispers[0].messages).toEqual([{ mine: false, text: 'こんにちは' }]);
+    });
+  });
+
+  it('新しい行動も予約でき、おかしな値は断る', () => {
+    const { clients } = started(2);
+    const [host] = clients;
+    for (const actions of [
+      [{ type: 'rest' }],
+      [{ type: 'guard' }],
+      [{ type: 'use', item: 'constructor' }],
+      [{ type: 'craft', recipe: 'constructor' }],
+      [{ type: 'craft', recipe: 'stone_knife' }],
+      [{ type: 'whisper', x: 'a', y: 1 }],
+    ]) {
+      host.inbox.length = 0;
+      host.say({ t: 'plan', actions: actions as never, ready: false });
+      const refused = actions[0].type === 'rest' || actions[0].type === 'guard' ? 0 : 1;
+      expect(host.all('error')).toHaveLength(refused);
+    }
+  });
+
   it('制限時間ごとに進み続け、ターンを重ねられる', () => {
     const { clients } = started(2);
     for (let i = 0; i < 4; i++) {

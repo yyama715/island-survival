@@ -1,5 +1,5 @@
 // 調整する数値はここに集める。章番号は docs/island-survival-spec.md のもの。
-import type { ItemId, MapSize, SpecialTerrainId, TerrainId } from './types';
+import type { ItemId, ItemStack, MapSize, RecipeId, SpecialTerrainId, StructureKind, TerrainId } from './types';
 
 export interface MapConfig {
   size: number;
@@ -40,11 +40,71 @@ export const MAX_MAP_ATTEMPTS = 200;
 // 5章 ステータス
 export const INITIAL_HP = 10;
 export const AP_PER_TURN = 3;
-export const INVENTORY_SLOTS = 6;
+export const INVENTORY_SLOTS = 8;
 export const STACK_SIZE = 5;
+export const INITIAL_HUNGER = 8;
+export const INITIAL_WATER = 8;
+export const MAX_HUNGER = 10;
+export const MAX_WATER = 10;
+/** 満腹度と水分がどちらもこの値以下だと「弱っている」 */
+export const WEAK_THRESHOLD = 3;
+export const STATUS_DAMAGE = { starving: 1, thirsty: 2, poison: 1, bleed: 1 };
+/**
+ * 出血が次のターンも続く確率。1ターン目のダメージは必ず受ける。
+ * 表の長さ＋1ターンが最長で、この値なら最大4ターン（数値は初期案）
+ */
+export const BLEED_CONTINUE_CHANCE: readonly number[] = [0.6, 0.3, 0.15];
+/**
+ * 疲労が起きる確率（初期案）。疲れると次のターンのAPが1減る。休息すると防げる。
+ * 移動は使ったAPの分だけ確率が上がる。ここにない行動では疲れない
+ */
+export const FATIGUE = { movePerAp: 0.05, gather: 0.05, craft: 0.1, build: 0.25, attack: 0.15 };
+/** キノコの外れ（初期案） */
+export const POISON = { chance: 0.25, turns: 2 };
 
 // 6章 行動
 export const GATHER_AP = 1;
+export const GUARD_AP = 1;
+export const HIDE_AP = 1;
+export const AMBUSH_AP = 1;
+export const LETTER_AP = 1;
+export const WHISPER_AP = 1;
+export const REST_HUT_MULTIPLIER = 2;
+
+// 6.1 密談と手紙
+export const WHISPER = { maxMessagesEach: 3, maxLength: 50 };
+export const LETTER = { maxLength: 50, material: 'wood' as ItemId };
+
+// 7.3 罠。設置マスに入った他人にHP−2＋足止め（そのターンのAPがなくなる）
+export const TRAP_DAMAGE = 2;
+
+export interface RecipeDef {
+  name: string;
+  ap: number;
+  /** どれか1組があれば作れる */
+  inputs: { item: ItemId; count: number }[][];
+  output?: ItemStack;
+  builds?: StructureKind;
+  summary: string;
+}
+
+const need = (...pairs: [ItemId, number][]) => pairs.map(([item, count]) => ({ item, count }));
+
+// 7.3 クラフトレシピ。勝利ルートに直結するもの（狼煙、いかだ、薬、砦、フルコース）はマイルストーン4で足す
+export const RECIPES: Record<RecipeId, RecipeDef> = {
+  stone_knife: { name: '石のナイフ', ap: 1, inputs: [need(['stone', 1], ['wood', 1])], output: { item: 'stone_knife', count: 1 }, summary: '攻撃 1d3+1' },
+  stone_axe: { name: '石斧', ap: 2, inputs: [need(['stone', 2], ['wood', 1])], output: { item: 'stone_axe', count: 1 }, summary: '攻撃 1d3+2、木材の採取が倍' },
+  spear: { name: '槍', ap: 2, inputs: [need(['wood', 2], ['stone', 1])], output: { item: 'spear', count: 1 }, summary: '隣接8マスから攻撃 1d3+2' },
+  bow: { name: '弓', ap: 2, inputs: [need(['wood', 2], ['rope', 1], ['ore', 1])], output: { item: 'bow', count: 1 }, summary: '2マス先まで攻撃（夜は使えない）' },
+  torch: { name: '松明', ap: 1, inputs: [need(['wood', 1], ['grass', 1])], output: { item: 'torch', count: 1 }, summary: '夜の視界+1。ただし夜でも誰なのか見える' },
+  canteen: { name: '水筒', ap: 1, inputs: [need(['shell_husk', 2])], output: { item: 'canteen', count: 1 }, summary: '水を持ち運べる' },
+  bandage: { name: '包帯', ap: 1, inputs: [need(['grass', 2])], output: { item: 'bandage', count: 1 }, summary: '使うとHP+2、出血が止まる。出血中に作ると自動で使う' },
+  rope: { name: 'ロープ', ap: 1, inputs: [need(['grass', 3]), need(['rope_scrap', 2])], output: { item: 'rope', count: 1 }, summary: '弓などの素材' },
+  sail: { name: '帆', ap: 2, inputs: [need(['cloth', 2], ['wood', 1])], output: { item: 'sail', count: 1 }, summary: 'いかだの素材' },
+  fishing_rod: { name: '釣竿', ap: 1, inputs: [need(['wood', 1], ['rope', 1])], output: { item: 'fishing_rod', count: 1 }, summary: '砂浜と川で魚が取れる。釣り糸より多い' },
+  trap: { name: '罠', ap: 2, inputs: [need(['wood', 2], ['grass', 1])], builds: 'trap', summary: 'このマスに入った他人にHP−2＋足止め' },
+  hut: { name: '小屋', ap: 3, inputs: [need(['wood', 4], ['grass', 2])], builds: 'hut', summary: '休息の回復が倍' },
+};
 
 // 8章 戦闘。攻撃はAP1で1ターンに1回まで。残りAPで届くなら相手を追いかける
 export const ATTACK_AP = 1;
@@ -59,6 +119,12 @@ export const COMBAT = {
   diagonalDamage: -1,
   /** 8.1 先手の利。これ以上のダメージを受けると、まだ手番が来ていない人のAPが減る */
   firstStrikeDamage: 2,
+  /** 8.3 相手が警戒中 */
+  guardHit: -0.2,
+  /** 6章 防御・警戒で受けるダメージが減る量 */
+  guardDamage: 2,
+  /** 8.2 森のマスにいる相手へ遠距離攻撃 */
+  rangedIntoForest: -0.2,
 };
 
 export interface WeaponDef {
@@ -68,19 +134,32 @@ export interface WeaponDef {
   /** 1d3 を振るか（振らないときは bonus がそのままダメージ） */
   rollsD3: boolean;
   bonus: number;
+  /** 遠距離攻撃は夜に使えない */
+  ranged?: boolean;
+  /** 上下左右と斜めの直線上だけ届く */
+  straightOnly?: boolean;
+  /** 命中してダメージを与えたときに出血させる確率 */
+  bleed: number;
 }
 
-// 8.2 射程と命中率。投石と弓はクラフトと一緒に足す
-export const UNARMED: WeaponDef = { range: 0, hit: 0.7, rollsD3: false, bonus: 1 };
+// 8.2 射程と命中率。出血は刃物が100%、それ以外は初期案
+export const UNARMED: WeaponDef = { range: 0, hit: 0.7, rollsD3: false, bonus: 1, bleed: 0 };
 export const WEAPONS: Partial<Record<ItemId, WeaponDef>> = {
-  stone_knife: { range: 0, hit: 0.7, rollsD3: true, bonus: 1 },
-  stone_axe: { range: 0, hit: 0.7, rollsD3: true, bonus: 2 },
-  spear: { range: 1, hit: 0.6, rollsD3: true, bonus: 2 },
+  stone_knife: { range: 0, hit: 0.7, rollsD3: true, bonus: 1, bleed: 1 },
+  stone_axe: { range: 0, hit: 0.7, rollsD3: true, bonus: 2, bleed: 1 },
+  spear: { range: 1, hit: 0.6, rollsD3: true, bonus: 2, bleed: 0.5 },
+  bow: { range: 2, hit: 0.6, rollsD3: false, bonus: 2, ranged: true, bleed: 0.5 },
 };
+/** 投石。石を1個使う。武器ではないので略奪の対象になる */
+export const THROW: WeaponDef = { range: 2, hit: 0.5, rollsD3: false, bonus: 1, ranged: true, straightOnly: true, bleed: 0 };
+export const THROW_ITEM: ItemId = 'stone';
+/** 瓶で殴る。当たっても外れても割れてなくなる使い切りの武器。自分で選んだときだけ使う */
+export const BOTTLE: WeaponDef = { range: 0, hit: 0.7, rollsD3: false, bonus: 2, bleed: 0.5 };
+export const BOTTLE_ITEM: ItemId = 'bottle';
 
 // 8.1 行動順。機敏さは職業の基礎値（マイルストーン4）。それまでは全員同じ値
 export const DEFAULT_AGILITY = 2;
-export const INITIATIVE_MODIFIER = { badlyHurt: -1, overloaded: -1 };
+export const INITIATIVE_MODIFIER = { badlyHurt: -1, overloaded: -1, weak: -2, rested: 1 };
 
 // 2.4 計画フェーズの制限時間。ルーム作成時に選ぶ
 export const PLAN_SECONDS_OPTIONS: readonly number[] = [60, 120];
@@ -123,6 +202,8 @@ export interface TerrainDef {
   blocksSight?: boolean;
   /** 3.3 視線を遮る地形の向こうまで見渡せる */
   seesOverBlocks?: boolean;
+  /** 6章 隠れることができる */
+  canHide?: boolean;
   summary: string;
   gather: GatherEntry[];
 }
@@ -166,6 +247,7 @@ export const TERRAIN: Record<TerrainId, TerrainDef> = {
     visionDay: -1,
     visionNight: -1,
     blocksSight: true,
+    canHide: true,
     summary: '木材、果実、キノコ。視界が狭く、外からも奥は見えない',
     gather: [
       { kind: 'nothing', weight: 20 },
@@ -181,6 +263,7 @@ export const TERRAIN: Record<TerrainId, TerrainDef> = {
     moveCost: 2,
     visionDay: 0,
     visionNight: 0,
+    canHide: true,
     summary: '石、火打石、鳥の卵',
     gather: [
       { kind: 'nothing', weight: 30 },
@@ -212,6 +295,9 @@ export const TERRAIN: Record<TerrainId, TerrainDef> = {
 };
 
 export const VISION_BASE = 1;
+export const TORCH_NIGHT_VISION = 1;
+/** 水筒がないときに泉や川でその場で飲んで回復する量（初期案） */
+export const DRINK_AT_SOURCE = 3;
 
 export const WATER_TERRAINS: readonly TerrainId[] = ['spring', 'river'];
 export const SPECIAL_TERRAINS: readonly SpecialTerrainId[] = ['cave', 'wreck', 'ruins'];
@@ -234,31 +320,49 @@ export const SPECIAL_LOOT: Record<SpecialTerrainId, ItemRoll[]> = {
   ruins: [one('honey'), { item: 'medicinal_herb', min: 2, max: 2 }, one('big_feather')],
 };
 
-export const ITEMS: Record<ItemId, { name: string }> = {
+export interface ItemUse {
+  hunger?: number;
+  water?: number;
+  hp?: number;
+  /** キノコの外れ */
+  risky?: boolean;
+  /** 出血を止める */
+  stopsBleeding?: boolean;
+  /** 使ったあとに残る物 */
+  leaves?: ItemId;
+}
+
+// 回復量は 7.1 にあるもの以外は初期案
+export const ITEMS: Record<ItemId, { name: string; use?: ItemUse }> = {
   wood: { name: '木材' },
-  fruit: { name: '果実' },
-  mushroom: { name: 'キノコ' },
-  honey: { name: '蜂蜜' },
+  fruit: { name: '果実', use: { hunger: 2 } },
+  mushroom: { name: 'キノコ', use: { hunger: 3, risky: true } },
+  honey: { name: '蜂蜜', use: { hunger: 2 } },
   medicinal_herb: { name: '薬草' },
-  shell: { name: '貝' },
+  shell: { name: '貝', use: { hunger: 2, leaves: 'shell_husk' } },
+  shell_husk: { name: '貝殻' },
   cloth: { name: '布' },
   rope_scrap: { name: 'ロープ片' },
   bottle: { name: '瓶' },
-  fish: { name: '魚' },
+  fish: { name: '魚', use: { hunger: 3 } },
   wreck_part: { name: '難破船の部品' },
   grass: { name: '草' },
-  herb: { name: '香草' },
-  nut: { name: '木の実' },
+  herb: { name: '香草', use: { hunger: 1 } },
+  nut: { name: '木の実', use: { hunger: 1 } },
   stone: { name: '石' },
   flint: { name: '火打石' },
-  egg: { name: '鳥の卵' },
+  egg: { name: '鳥の卵', use: { hunger: 2 } },
   ore: { name: '鉱石' },
   big_feather: { name: '大羽根' },
-  water: { name: '淡水' },
+  water: { name: '淡水', use: { water: 3 } },
   rope: { name: 'ロープ' },
   stone_knife: { name: '石のナイフ' },
   stone_axe: { name: '石斧' },
   spear: { name: '槍' },
+  bow: { name: '弓' },
+  torch: { name: '松明' },
+  bandage: { name: '包帯', use: { hp: 2, stopsBleeding: true } },
+  sail: { name: '帆' },
   fishing_line: { name: '釣り糸' },
   fishing_rod: { name: '釣竿' },
   canteen: { name: '水筒' },

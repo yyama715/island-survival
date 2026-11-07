@@ -113,6 +113,15 @@
             <span class="stat-name">HP</span>
             <strong id="hp-value"></strong>
           </div>
+          <div class="stat">
+            <span class="stat-name">満腹</span>
+            <strong id="hunger-value"></strong>
+          </div>
+          <div class="stat">
+            <span class="stat-name">水分</span>
+            <strong id="water-value"></strong>
+          </div>
+          <span id="status-tags" class="status-tags"></span>
         </div>
       </header>
 
@@ -129,9 +138,22 @@
           <button id="confirm" class="btn btn-primary" type="button">予約を確定</button>
         </section>
 
+        <section class="more-actions">
+          <button id="act-rest" class="btn btn-small" type="button">休息</button>
+          <button id="act-guard" class="btn btn-small" type="button">防御</button>
+          <button id="act-hide" class="btn btn-small" type="button">隠れる</button>
+          <button id="act-ambush" class="btn btn-small" type="button">待ち伏せ</button>
+        </section>
+
         <section class="card">
           <h2>予約 <span id="plan-note" class="muted"></span></h2>
           <ol id="plan-list" class="plan-list"></ol>
+        </section>
+
+        <section class="card" id="whisper-card" hidden>
+          <h2>密談</h2>
+          <p id="whisper-seen" class="hint" hidden>近くで誰かがひそひそ話している…</p>
+          <div id="whisper-list" class="whisper-list"></div>
         </section>
 
         <section class="card">
@@ -145,6 +167,17 @@
           <h2>所持品 <span id="slot-count" class="muted"></span></h2>
           <ul id="inventory" class="inventory"></ul>
         </section>
+
+        <details class="card" id="craft-card">
+          <summary>クラフト・建設</summary>
+          <ul id="recipes" class="recipes"></ul>
+          <form id="letter-form" class="letter-form">
+            <label class="field">手紙を置く（木材1個、AP1。このマスに来た人が読める）
+              <input id="letter-text" maxlength="50" autocomplete="off" placeholder="50文字まで" />
+            </label>
+            <button id="letter-add" class="btn btn-small" type="submit">予約する</button>
+          </form>
+        </details>
 
         <section class="card">
           <h2>できごと</h2>
