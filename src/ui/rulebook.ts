@@ -50,6 +50,13 @@ import {
   SPECIAL_REPEAT_NOTHING_CHANCE,
   SPECIAL_TERRAINS,
   SUPPLY_ITEMS,
+  BOTTLE_ITEM,
+  GENRE_NAMES,
+  ITEM_GENRE,
+  LETTER,
+  RAFT,
+  THROW_ITEM,
+  WEAPONS,
   type ItemId,
   type ItemRoll,
 } from '../core/index';
@@ -159,7 +166,7 @@ const page1 = `
       <li><b>医師の治療</b>は同じマスか隣のマスの相手に届く</li>
     </ul>
   </div>
-  <p class="foot">1 / 4</p>
+  <p class="foot">1 / 5</p>
 </section>`;
 
 const page2 = `
@@ -236,7 +243,7 @@ const page2 = `
       <li>罠：そのマスに入った他人にHP−2＋足止め。瓶で殴ると1回で割れる。脱落した人の持ち物は「遺品」として残る</li>
     </ul>
   </div>
-  <p class="foot">2 / 4</p>
+  <p class="foot">2 / 5</p>
 </section>`;
 
 const page3 = `
@@ -276,7 +283,7 @@ const page3 = `
     </ul>
   </div>
 
-  <p class="foot">3 / 4</p>
+  <p class="foot">3 / 5</p>
 </section>`;
 
 /** 4ページ目：どこで何が採れるか。数字は採取テーブルから計算する */
@@ -342,11 +349,59 @@ const specialRows = SPECIAL_TERRAINS.map(
   (t) =>
     `<tr><td class="icon">${img(terrainUrl(t, 0, 0))}</td><th>${TERRAIN[t].name}</th><td>最初の1回はレア確定：${rollText(SPECIAL_LOOT[t])}のどれか。2回目からは${pct(SPECIAL_REPEAT_NOTHING_CHANCE)}で何もなし</td></tr>`,
 ).join('');
+/** 持っているだけで効く道具 */
+const TOOL_USES: Partial<Record<ItemId, string>> = {
+  compass: '持っていると方向音痴で迷わない',
+  map_fragment: 'ゲーム開始時に5×5マスの霧が晴れる',
+  binoculars: '昼の視界+1',
+  pot: '食料を食べたときの回復+1',
+  salt: '魚・肉・干し魚・卵の回復+1',
+  backpack: '所持枠+4',
+  torch: '夜の視界+1（ただし夜でも自分が誰か見える）',
+  fishing_line: '砂浜・川で魚が釣れる',
+  fishing_rod: '砂浜・川で魚が釣れる（1匹多い）',
+  canteen: '泉・川の水を淡水として持ち運べる',
+  stone_axe: '木材の採取が2倍',
+  island_lord: '漁師の勝利条件。料理人の食材2ジャンル分',
+};
+
+/** その素材の使い道。食べる・材料・武器・道具をまとめる */
+function itemUses(item: ItemId): string[] {
+  const uses: string[] = [];
+  const effect = ITEMS[item].use;
+  if (effect) {
+    const gains = [
+      effect.hunger ? `満腹+${effect.hunger}` : '',
+      effect.water ? `水分+${effect.water}` : '',
+      effect.hp ? `HP+${effect.hp}` : '',
+      effect.stopsBleeding ? '出血を止める' : '',
+      effect.curesPoison ? '中毒を治す' : '',
+      effect.risky ? '中毒のおそれ' : '',
+      effect.winsGame ? '食べると勝利' : '',
+    ].filter(Boolean);
+    uses.push(`${effect.food ? '食べる' : effect.water ? '飲む' : '使う'}（${gains.join('・')}）`);
+  }
+  const genre = ITEM_GENRE[item];
+  if (genre && item !== 'island_lord') uses.push(`料理人の食材（${GENRE_NAMES[genre]}）`);
+  const tool = TOOL_USES[item];
+  if (tool) uses.push(tool);
+  if (WEAPONS[item]) uses.push('武器');
+  if (item === THROW_ITEM) uses.push('投げて攻撃');
+  if (item === BOTTLE_ITEM) uses.push('殴ると割れる武器');
+  const recipes = (Object.keys(RECIPES) as RecipeId[]).filter((id) => RECIPES[id].inputs.some((set) => set.some((n) => n.item === item)));
+  if (recipes.length > 0) uses.push(`${recipes.map((id) => RECIPES[id].name).join('・')}の材料`);
+  if (RAFT.needs.some((n) => n.item === item)) uses.push('いかだの材料');
+  if (item === LETTER.material) uses.push('手紙');
+  return uses;
+}
+
 const findRows = whereToFind();
-const half = Math.ceil(findRows.length / 2);
 const findTable = (rows: typeof findRows) =>
-  `<table>${rows
-    .map(({ item, where }) => `<tr><td class="icon">${img(itemUrl(item))}</td><th>${ITEMS[item].name}</th><td>${where.join('、') || '—'}</td></tr>`)
+  `<table><tr><th class="icon"></th><th>アイテム</th><th>手に入る場所</th><th>使い道</th></tr>${rows
+    .map(({ item, where }) => {
+      const uses = itemUses(item);
+      return `<tr><td class="icon">${img(itemUrl(item))}</td><th>${ITEMS[item].name}</th><td>${where.join('、') || '—'}</td><td>${uses.join('、') || '<span class="miss">今は使い道なし</span>'}</td></tr>`;
+    })
     .join('')}</table>`;
 
 const page4 = `
@@ -373,16 +428,20 @@ const page4 = `
     </ul>
   </div>
 
-  <h2 class="pixel">素材の逆引き</h2>
-  <div class="cols find">
-    ${findTable(findRows.slice(0, half))}
-    ${findTable(findRows.slice(half))}
-  </div>
   <h2 class="pixel">はじめて遊ぶ人へのコツ</h2>
   <div class="box">
     <p>① まずは水場（泉・川）の場所を覚える。② 序盤の2日間は攻撃されないので、採取と探索で準備する。③ 行動順が後の人は、先に動く人の動きを読んで予約する。④ 密談で手を組むのも、裏切るのも自由。⑤ 「誰かが勝利目前！」と賞金首が出たら、全員で止めに行こう。</p>
   </div>
-  <p class="foot">4 / 4</p>
+  <p class="foot">4 / 5</p>
 </section>`;
 
-document.getElementById('book')!.innerHTML = page1 + page2 + page3 + page4;
+const page5 = `
+<section class="page">
+  <h2 class="pixel">素材の逆引き（どこで手に入り、何に使うか）</h2>
+  <div class="find">
+    ${findTable(findRows)}
+  </div>
+  <p class="foot">5 / 5</p>
+</section>`;
+
+document.getElementById('book')!.innerHTML = page1 + page2 + page3 + page4 + page5;

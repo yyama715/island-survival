@@ -32,7 +32,7 @@
 
 音は `src/ui/audio.ts` で Web Audio から鳴らす（外部の音源なし）。
 
-ユーザー向けのルールブックは `rulebook.html`（`src/ui/rulebook.ts`）。数値はルール本体のデータから読む。PDF は Edge の headless 印刷で docs/rulebook.pdf に書き出す（A4で4枚。4枚目は採取表と素材の逆引き）。
+ユーザー向けのルールブックは `rulebook.html`（`src/ui/rulebook.ts`）。数値はルール本体のデータから読む。PDF は Edge の headless 印刷で docs/rulebook.pdf に書き出す（A4で5枚。4枚目は採取表、5枚目は素材の入手先と使い道）。
 
 複数人の確認は、同じPCならタブを分ければ別の席になる（席の記憶はタブごと）。
 
