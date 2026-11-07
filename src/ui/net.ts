@@ -35,6 +35,8 @@ export class Net {
   private ws: WebSocket | null = null;
   private token = loadToken();
   private wasConnected = false;
+  /** 保存していた席へ戻ろうとしている最中か */
+  resuming = false;
 
   constructor(private readonly handlers: NetHandlers) {
     this.connect();
@@ -58,8 +60,12 @@ export class Net {
     ws.addEventListener('open', () => {
       this.wasConnected = true;
       this.handlers.onConnectionChange(true);
-      if (this.token) this.send({ t: 'resume', token: this.token });
-      else this.handlers.onReadyWithoutRoom();
+      if (this.token) {
+        this.resuming = true;
+        this.send({ t: 'resume', token: this.token });
+      } else {
+        this.handlers.onReadyWithoutRoom();
+      }
     });
 
     ws.addEventListener('message', (event) => {

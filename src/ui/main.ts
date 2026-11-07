@@ -51,6 +51,9 @@ const KEY_DIRECTION: Record<string, Direction> = {
 const DELTA: Record<Direction, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 const AP_DISPLAY = 3;
 const URGENT_SECONDS = 10;
+const SLOW_CONNECT_MS = 15_000;
+const ERROR_TOAST_MS = 6000;
+const TOAST_MS = 2600;
 
 type Screen = 'home' | 'lobby' | 'game' | 'result';
 
@@ -69,13 +72,23 @@ let replayTimer: ReturnType<typeof setTimeout> | null = null;
 let actingId: number | null = null;
 let hostCanStart = false;
 let inviteUrl = '';
+/** URLで招待されている合言葉。別のルームの席が残っていても、こちらを優先する */
+let invitedCode = new URLSearchParams(location.search).get('room')?.trim().toUpperCase() ?? '';
+let switchingRoom = false;
 
 const net = new Net({
   onMessage: handleMessage,
   onConnectionChange(connected) {
-    $('connection-banner').hidden = connected;
+    const banner = $('connection-banner');
+    banner.hidden = connected;
+    if (connected) window.clearTimeout(slowConnectTimer);
+    else {
+      banner.textContent = '接続が切れました。再接続しています…';
+      watchSlowConnect();
+    }
   },
   onReadyWithoutRoom() {
+    showInviteOnHome();
     showScreen('home');
   },
 });
@@ -87,19 +100,54 @@ function showScreen(screen: Screen) {
   $('screen-result').hidden = screen !== 'result';
 }
 
-function toast(text: string) {
+function toast(text: string, ms = TOAST_MS) {
   const element = $('toast');
   element.textContent = text;
   element.hidden = false;
   window.clearTimeout(Number(element.dataset.timer));
-  element.dataset.timer = String(window.setTimeout(() => (element.hidden = true), 2600));
+  element.dataset.timer = String(window.setTimeout(() => (element.hidden = true), ms));
+}
+
+let slowConnectTimer = 0;
+
+/** サーバーの目覚めを待つ間も、接続できない場合も、何が起きているかを見せる */
+function watchSlowConnect() {
+  window.clearTimeout(slowConnectTimer);
+  slowConnectTimer = window.setTimeout(() => {
+    $('connection-banner').textContent =
+      'まだ接続できません。サーバーの起動に1分ほどかかることがあります。続くときは Wi-Fi とモバイル回線を切り替えてください。';
+  }, SLOW_CONNECT_MS);
+}
+
+/** 今いる席とURLをそろえる。再読み込みしたときに、別のルームへの招待と間違えないように */
+function setRoomInUrl(code: string | null) {
+  const url = new URL(location.href);
+  if (code) url.searchParams.set('room', code);
+  else url.searchParams.delete('room');
+  history.replaceState(null, '', url);
+}
+
+function showInviteOnHome() {
+  $<HTMLInputElement>('join-code').value = invitedCode;
+  $('invite-hint').hidden = !invitedCode;
+  $('join-error').hidden = true;
 }
 
 function handleMessage(message: ServerMessage) {
   switch (message.t) {
     case 'joined':
+      net.resuming = false;
+      if (invitedCode && message.code !== invitedCode) {
+        // 前のルームの席が残っている。招待を優先して抜ける
+        switchingRoom = true;
+        net.send({ t: 'leave' });
+        break;
+      }
+      invitedCode = '';
+      setRoomInUrl(message.code);
       break;
     case 'lobby':
+      if (switchingRoom) break;
       stopReplay();
       view = null;
       log = [];
@@ -107,6 +155,7 @@ function handleMessage(message: ServerMessage) {
       showScreen('lobby');
       break;
     case 'planning':
+      if (switchingRoom) break;
       stopReplay();
       view = message.view;
       plan = message.plan;
@@ -124,6 +173,7 @@ function handleMessage(message: ServerMessage) {
       if (view) renderOrder();
       break;
     case 'waiting':
+      if (switchingRoom) break;
       stopReplay();
       view = message.view;
       status = message.status;
@@ -141,6 +191,7 @@ function handleMessage(message: ServerMessage) {
       playReplay(message.steps, message.stepMs);
       break;
     case 'result':
+      if (switchingRoom) break;
       stopReplay();
       $('result-title').textContent =
         message.winnerName === null ? '誰も生き残らなかった' : `${message.winnerName} の勝ち！`;
@@ -151,15 +202,33 @@ function handleMessage(message: ServerMessage) {
       break;
     case 'left':
       net.clearToken();
+      stopReplay();
+      view = null;
+      if (!switchingRoom) setRoomInUrl(null);
+      switchingRoom = false;
+      showInviteOnHome();
       showScreen('home');
       break;
-    case 'error':
-      if (message.code === 'noRoom') {
+    case 'error': {
+      const wasResuming = net.resuming;
+      net.resuming = false;
+      if (wasResuming) {
+        // 保存していた席が消えていた。招待されているなら、そちらへの案内だけを出す
         net.clearToken();
+        showInviteOnHome();
         showScreen('home');
+        if (invitedCode) break;
       }
-      toast(message.message);
+      if (!$('screen-home').hidden) {
+        const error = $('join-error');
+        error.textContent = message.message;
+        error.hidden = false;
+        $('invite-hint').hidden = true;
+      } else {
+        toast(message.message, ERROR_TOAST_MS);
+      }
       break;
+    }
   }
 }
 
@@ -169,6 +238,8 @@ function renderLobby(message: Extract<ServerMessage, { t: 'lobby' }>) {
   // 公開先では自分が開いているアドレスをそのまま渡す。localhost は友だちから見えないのでサーバーの案内を使う
   const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   inviteUrl = isLocal ? message.inviteUrl : `${location.origin}/?room=${message.code}`;
+  // 手元のサーバーで作ったルームは、公開サイトとは別物で、外からは入れない
+  $('local-warning').hidden = !(isLocal || /^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\./.test(location.hostname));
   hostCanStart = message.youId === message.hostId;
   $('lobby-code').textContent = message.code;
   $('invite-url').textContent = inviteUrl;
@@ -626,6 +697,7 @@ $('create-form').addEventListener('submit', (event) => {
 $('join-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const code = $<HTMLInputElement>('join-code').value.trim();
+  $('join-error').hidden = true;
   if (code) net.send({ t: 'join', code, name: playerName() });
   else toast('合言葉を入れてください');
 });
@@ -633,6 +705,9 @@ $('join-form').addEventListener('submit', (event) => {
 $('start-game').addEventListener('click', () => net.send({ t: 'start' }));
 $('leave-room').addEventListener('click', () => net.send({ t: 'leave' }));
 $('leave-result').addEventListener('click', () => net.send({ t: 'leave' }));
+$('leave-game').addEventListener('click', () => {
+  if (window.confirm('このゲームから抜けますか？ 抜けると戻れません。')) net.send({ t: 'leave' });
+});
 $('back-to-lobby').addEventListener('click', () => net.send({ t: 'backToLobby' }));
 $('copy-invite').addEventListener('click', async () => {
   try {
@@ -688,9 +763,7 @@ new ResizeObserver(() => {
   if (view && !$('screen-game').hidden) centerMap(view, 'auto');
 }).observe($('map-scroll'));
 
-// 招待URLから来たら合言葉を入れておく
-const invited = new URLSearchParams(location.search).get('room');
-if (invited) $<HTMLInputElement>('join-code').value = invited;
+watchSlowConnect();
 try {
   $<HTMLInputElement>('name').value = localStorage.getItem('island-survival-name') ?? '';
 } catch {

@@ -55,6 +55,9 @@ p { margin: 4px 0 0; }
 .center-text { text-align: center; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .wrap { overflow-wrap: anywhere; }
+.hint { color: var(--accent); font-size: 13px; font-weight: 700; }
+#local-warning { font-size: 13px; }
+#local-warning a { color: inherit; font-weight: 700; }
 
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 700; }
 .field-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }

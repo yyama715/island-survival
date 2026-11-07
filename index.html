@@ -26,6 +26,8 @@
             <input id="join-code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="合言葉（4文字）" aria-label="合言葉" />
             <button class="btn btn-primary" type="submit">入る</button>
           </form>
+          <p id="invite-hint" class="hint" hidden>招待された合言葉を入れました。名前を入れて「入る」を押してください。</p>
+          <p id="join-error" class="warn" role="alert" hidden></p>
         </div>
 
         <form id="create-form" class="card stack">
@@ -66,6 +68,9 @@
           <p id="lobby-code" class="room-code"></p>
           <button id="copy-invite" class="btn" type="button">招待URLをコピー</button>
           <p id="invite-url" class="muted wrap"></p>
+          <p id="local-warning" class="warn" hidden>
+            これは開発用のサーバーです。同じWi-Fiの人しか入れません。遠くの友だちと遊ぶときは、<a id="public-site" href="https://island-survival-f3zf.onrender.com/">公開サイト</a>でルームを作ってください。
+          </p>
         </div>
         <div class="card stack">
           <h2>参加者 <span id="lobby-count" class="muted"></span></h2>
@@ -145,6 +150,8 @@
           <h2>できごと</h2>
           <ol id="log" class="log"></ol>
         </section>
+
+        <button id="leave-game" class="btn btn-quiet" type="button">ゲームから抜ける</button>
       </aside>
     </div>
 
