@@ -2,7 +2,9 @@
 import {
   AID_AP,
   AMBUSH_AP,
+  HEAL_RANGE,
   HUNT_AP,
+  recipeInputs,
   SWIM_COST,
   WEATHER,
   ATTACK_AP,
@@ -39,6 +41,7 @@ import type {
   InitiativeEntry,
   ItemId,
   ItemStack,
+  Trade,
   Phase,
   PlanAction,
   ResolutionStep,
@@ -80,6 +83,10 @@ export interface WhisperView {
   /** 相手。夜は誰なのか分からない */
   withId: number | null;
   messages: { mine: boolean; text: string }[];
+  /** 6.2 この密談の取引。give は自分が渡す物、take は自分がもらう物 */
+  trade: { id: number; mine: boolean; give: ItemStack; take: ItemStack; status: Trade['status'] } | null;
+  /** 同盟の申し込み */
+  alliance: 'none' | 'offeredByMe' | 'offeredToMe' | 'refused';
 }
 
 export interface PlayerView {
@@ -123,13 +130,17 @@ export interface PlayerView {
     publicTrait: TraitId | null;
     /** 発動して公開された秘密特性 */
     revealedTrait: TraitId | null;
+    /** 自分と同盟している */
+    ally: boolean;
   }[];
   /** 本人だけが知っている情報 */
   secret: { trait: TraitId | null; extraJob: JobId | null; used: boolean; radioFixed: boolean };
   /** 勝利条件の進み具合（本人にだけ） */
   goals: GoalLine[];
   /** 7.4 地図に出す公開の目印 */
-  marks: { x: number; y: number; kind: 'smoke' | 'ship' | 'shipComing' | 'sink' | 'supply' }[];
+  marks: { x: number; y: number; kind: 'smoke' | 'ship' | 'shipComing' | 'sink' | 'supply' | 'bounty' | 'campfire' }[];
+  /** 同盟（全員に公開） */
+  alliances: { a: number; b: number }[];
   weather: Weather;
   finalPhase: boolean;
   /** 8.5 幽霊としての情報 */
@@ -165,6 +176,9 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
     if (scout.playerId === me.id && scout.untilTurn >= state.turn) for (const cell of scout.cells) visible.add(cell);
   }
 
+  const allies = state.alliances
+    .filter((a) => a.a === me.id || a.b === me.id)
+    .map((a) => state.players[a.a === me.id ? a.b : a.a]);
   const cells: CellView[] = [];
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -172,6 +186,9 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
       const isVisible = visible.has(index);
       const remembered = me.memory[index];
       const figures: Figure[] = [];
+      for (const ally of allies) {
+        if (!isVisible && ally.alive && !ally.playingDead && ally.x === x && ally.y === y) figures.push({ kind: 'player', id: ally.id, name: ally.name });
+      }
       if (isVisible) {
         for (const other of state.players) {
           if (!other.alive || other.x !== x || other.y !== y) continue;
@@ -206,6 +223,12 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
   }
 
   const terrainHere = state.map.terrain[cellIndex(state, me.x, me.y)];
+  const tradeView = (id: number | undefined): WhisperView['trade'] => {
+    const trade = state.trades.find((t) => t.id === id);
+    if (!trade) return null;
+    const mine = trade.from === me.id;
+    return { id: trade.id, mine, give: mine ? trade.give : trade.take, take: mine ? trade.take : trade.give, status: trade.status };
+  };
   const whispers: WhisperView[] = state.whispers
     .filter((w) => w.from === me.id || w.to === me.id)
     .map((w) => ({
@@ -214,6 +237,8 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
       status: w.status,
       withId: seesNames(state, me, state.players[w.from === me.id ? w.to : w.from]) ? (w.from === me.id ? w.to : w.from) : null,
       messages: w.messages.map((m) => ({ mine: m.from === me.id, text: m.text })),
+      trade: tradeView(w.tradeId),
+      alliance: w.allianceRefused ? 'refused' : w.allianceFrom === undefined ? 'none' : w.allianceFrom === me.id ? 'offeredByMe' : 'offeredToMe',
     }));
   const whisperSeen = state.whispers.flatMap((w) => {
     if (w.status !== 'open' || w.from === me.id || w.to === me.id) return [];
@@ -229,18 +254,22 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
   // 7.4 狼煙は全員に見える。船は呼んだ本人と、到着の1ターン前からの全員に見える
   const marks: PlayerView['marks'] = [];
   for (const [index, structure] of Object.entries(state.structures)) {
-    if (structure.kind === 'smoke') {
-      marks.push({ x: Number(index) % width, y: Math.floor(Number(index) / width), kind: 'smoke' });
+    // 狼煙と焚き火の煙は全員に見える
+    if (structure.kind === 'smoke' || structure.kind === 'campfire') {
+      marks.push({ x: Number(index) % width, y: Math.floor(Number(index) / width), kind: structure.kind });
     }
   }
   const ship = state.ship;
-  if (ship && !ship.gone && (ship.callerId === me.id || state.turn >= ship.arrivesTurn - 1)) {
+  if (ship && !ship.gone && (ship.callerId === me.id || state.turn >= ship.arrivesTurn - SMOKE.publicLeadTurns)) {
     marks.push({ x: ship.x, y: ship.y, kind: state.turn >= ship.arrivesTurn ? 'ship' : 'shipComing' });
   }
   for (const cell of state.sinkNext) {
     marks.push({ x: cell % width, y: Math.floor(cell / width), kind: 'sink' });
   }
   if (state.supply) marks.push({ ...state.supply, kind: 'supply' });
+  for (const bounty of state.bounties) {
+    if (bounty.untilTurn >= state.turn) marks.push({ x: bounty.x, y: bounty.y, kind: 'bounty' });
+  }
   const hauntStamp = state.finalPhase ? state.turn : dayOf(state.turn);
 
   return {
@@ -253,6 +282,7 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
     secret: { trait: me.secretTrait, extraJob: me.extraJob, used: me.secretUsed, radioFixed: me.radioFixed },
     goals: describeProgress(state, me),
     marks,
+    alliances: state.alliances,
     weather: state.weather,
     finalPhase: state.finalPhase,
     ghost: isGhost
@@ -297,6 +327,7 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
       job: p.job,
       publicTrait: p.publicTrait,
       revealedTrait: p.secretRevealed ? p.secretTrait : null,
+      ally: allies.some((a) => a.id === p.id),
     })),
     initiative: state.initiative
       .filter((entry) => entry.playerId === me.id || !state.players[entry.playerId].playingDead)
@@ -391,7 +422,7 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       if (recipe.builds === 'smoke' && (view.turn < SMOKE.firstTurn || view.turn > SMOKE.lastTurn)) ok = false;
       const inputs = recipe.course
         ? courseIngredients(owned)
-        : recipe.inputs.find((set) => set.every(({ item, count }) => (owned.get(item) ?? 0) >= count));
+        : recipeInputs(action.recipe, me?.publicTrait ?? null).find((set) => set.every(({ item, count }) => (owned.get(item) ?? 0) >= count));
       if (!inputs) ok = false;
       else for (const { item, count } of inputs) spend(item, count);
       if (recipe.output) add(recipe.output.item, recipe.output.count);
@@ -424,7 +455,7 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       ap -= HEAL_AP;
       if (me?.job !== 'doctor' && view.secret.extraJob !== 'doctor') ok = false;
       const here = view.cells[action.y * view.width + action.x];
-      if (!here || here.x !== x || here.y !== y || !canTarget({ ...view, turn: Math.max(view.turn, EARLY_PROTECTION_TURNS + 1) }, action)) ok = false;
+      if (!here || Math.max(Math.abs(here.x - x), Math.abs(here.y - y)) > HEAL_RANGE || !canTarget({ ...view, turn: Math.max(view.turn, EARLY_PROTECTION_TURNS + 1) }, action)) ok = false;
     } else if (action.type === 'explore') {
       ap -= EXPLORE_AP;
     } else if (action.type === 'repair') {
@@ -466,6 +497,9 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       if (me?.job !== 'doctor' && view.secret.extraJob !== 'doctor') spend('bandage', 1);
     } else if (action.type === 'haunt' || action.type === 'curse') {
       ok = false;
+    } else if (action.type === 'withhold') {
+      // 合意した取引で、自分の分を渡さない
+      if (!view.whispers.some((w) => w.trade?.id === action.tradeId && w.trade.status === 'agreed')) ok = false;
     } else {
       moved = true;
       if (ambushes > 0) ok = false;
@@ -598,6 +632,9 @@ export function replayFor(viewerId: number, previous: GameState, steps: readonly
         case 'finalSunk':
         case 'traitRevealed':
         case 'nearVictory':
+        case 'bountyPosted':
+        case 'allianceFormed':
+        case 'allianceBroken':
         case 'lordCaught':
         case 'fortCompleted':
         case 'fortDestroyed':
@@ -624,6 +661,12 @@ export function replayFor(viewerId: number, previous: GameState, steps: readonly
         case 'spotted':
         case 'trapSprung':
         case 'whisperFailed':
+        case 'traded':
+        case 'betrayalSensed':
+        case 'driftFound':
+        case 'escaped':
+        case 'survivorHeld':
+        case 'bountyClaimed':
           if (event.playerId === viewerId) {
             events.push(event);
             changed = true;

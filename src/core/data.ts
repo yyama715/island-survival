@@ -1,5 +1,5 @@
 ﻿// 調整する数値はここに集める。章番号は docs/island-survival-spec.md のもの。
-import type { ItemId, ItemStack, JobId, MapSize, RecipeId, SpecialTerrainId, StructureKind, TerrainId } from './types';
+import type { ItemId, ItemStack, JobId, MapSize, RecipeId, SpecialTerrainId, StructureKind, TerrainId, TraitId } from './types';
 
 export interface MapConfig {
   size: number;
@@ -15,18 +15,24 @@ export const MAP_SIZE_NAMES: Record<MapSize, string> = { small: '小', medium: '
 export const MAP_CONFIG: Record<number, Record<MapSize, MapConfig>> = {
   3: {
     small: { size: 10, land: 65, specials: 4, springs: { min: 2, max: 3 } },
-    medium: { size: 12, land: 95, specials: 5, springs: { min: 3, max: 4 } },
-    large: { size: 14, land: 130, specials: 6, springs: { min: 4, max: 5 } },
+    medium: { size: 12, land: 95, specials: 5, springs: { min: 4, max: 5 } },
+    large: { size: 14, land: 130, specials: 6, springs: { min: 6, max: 7 } },
   },
   4: {
     small: { size: 11, land: 80, specials: 4, springs: { min: 2, max: 3 } },
-    medium: { size: 13, land: 112, specials: 5, springs: { min: 3, max: 4 } },
-    large: { size: 15, land: 148, specials: 6, springs: { min: 4, max: 5 } },
+    medium: { size: 13, land: 112, specials: 5, springs: { min: 4, max: 5 } },
+    large: { size: 15, land: 148, specials: 6, springs: { min: 6, max: 7 } },
   },
   5: {
     small: { size: 12, land: 95, specials: 5, springs: { min: 2, max: 3 } },
-    medium: { size: 14, land: 130, specials: 6, springs: { min: 3, max: 4 } },
-    large: { size: 16, land: 170, specials: 7, springs: { min: 4, max: 5 } },
+    medium: { size: 14, land: 130, specials: 6, springs: { min: 4, max: 5 } },
+    large: { size: 16, land: 170, specials: 7, springs: { min: 6, max: 7 } },
+  },
+  // 職業が6種類あるので6人まで遊べる
+  6: {
+    small: { size: 13, land: 112, specials: 5, springs: { min: 2, max: 3 } },
+    medium: { size: 15, land: 150, specials: 6, springs: { min: 4, max: 5 } },
+    large: { size: 17, land: 192, specials: 7, springs: { min: 6, max: 7 } },
   },
 };
 export const SEA_MARGIN = 1;
@@ -72,6 +78,8 @@ export const LETTER_AP = 1;
 export const WHISPER_AP = 1;
 export const REST_HUT_MULTIPLIER = 2;
 export const HEAL_AP = 1;
+/** 治療が届く距離（テストプレイを受けて隣のマスまで） */
+export const HEAL_RANGE = 1;
 export const EXPLORE_AP = 1;
 export const REPAIR_AP = 1;
 
@@ -135,12 +143,20 @@ export const FINAL = {
 // 4章 職業と特性の数値（初期案を含む）
 export const SOLDIER = { hit: 0.1, damage: 1 };
 export const FISHER_FISH_MULTIPLIER = 2;
-export const BIG_EATER_HP = 2;
+export const BIG_EATER_HP = 3;
+/** 大食いは食べたときの回復量も増える */
+export const BIG_EATER_FOOD = 1;
 export const EARLY_RISER_BONUS = 3;
 export const LOST_SENSE_DRIFT = 0.1;
-export const LOST_SENSE_GATHER = 10;
+export const LOST_SENSE_GATHER = 15;
 export const TENACITY_HP = 3;
 export const MAP_FRAGMENT_RADIUS = 2;
+
+// テストプレイから追加したルール
+export const CAMPFIRE = { turns: 4, food: 1, nightVision: 1 };
+/** 最下位の救済。朝、一番苦しい人の足元に物が流れ着く */
+export const CATCH_UP = { chance: 0.5, items: ['fruit', 'water', 'bandage', 'rope', 'shell'] as ItemId[] };
+export const ARCHER = { range: 1, hit: 0.1 };
 
 // 6.1 密談と手紙
 export const WHISPER = { maxMessagesEach: 3, maxLength: 50 };
@@ -172,7 +188,7 @@ export const RECIPES: Record<RecipeId, RecipeDef> = {
   medicine: { name: '薬', ap: 1, inputs: [need(['medicinal_herb', 1])], output: { item: 'medicine', count: 1 }, job: 'doctor', summary: '使った人のHP+3。誰が使っても医師の治療回数に数える' },
   fort: { name: '砦', ap: 3, inputs: [need(['wood', 6], ['stone', 3], ['rope', 1])], builds: 'fort', job: 'carpenter', summary: '耐久10。中にいると防御+2。修理できる' },
   full_course: { name: '島のフルコース', ap: 2, inputs: [[]], output: { item: 'full_course', count: 1 }, job: 'cook', course: true, summary: '6ジャンルのうち4ジャンルの食材を各1つ。食べると特殊勝利' },
-  smoke: { name: '狼煙', ap: 3, inputs: [need(['wood', 5], ['flint', 1]), need(['wood', 5], ['matches', 1])], builds: 'smoke', onTerrain: 'mountain', summary: '山で上げる（3〜9日目）。3ターン後に救助船が砂浜へ来る' },
+  smoke: { name: '狼煙', ap: 3, inputs: [need(['wood', 3], ['flint', 1]), need(['wood', 3], ['matches', 1])], builds: 'smoke', onTerrain: 'mountain', summary: '山で上げる（3〜9日目）。2ターン後に救助船が砂浜へ来る' },
   backpack: { name: 'リュック', ap: 2, inputs: [need(['cloth', 3], ['rope', 1])], output: { item: 'backpack', count: 1 }, summary: '所持枠+4' },
   stone_knife: { name: '石のナイフ', ap: 1, inputs: [need(['stone', 1], ['wood', 1])], output: { item: 'stone_knife', count: 1 }, summary: '攻撃 1d3+1' },
   stone_axe: { name: '石斧', ap: 2, inputs: [need(['stone', 2], ['wood', 1])], output: { item: 'stone_axe', count: 1 }, summary: '攻撃 1d3+2、木材の採取が倍' },
@@ -185,6 +201,7 @@ export const RECIPES: Record<RecipeId, RecipeDef> = {
   sail: { name: '帆', ap: 2, inputs: [need(['cloth', 2], ['wood', 1])], output: { item: 'sail', count: 1 }, summary: 'いかだの素材' },
   fishing_rod: { name: '釣竿', ap: 1, inputs: [need(['wood', 1], ['rope', 1])], output: { item: 'fishing_rod', count: 1 }, summary: '砂浜と川で魚が取れる。釣り糸より多い' },
   trap: { name: '罠', ap: 2, inputs: [need(['wood', 2], ['grass', 1])], builds: 'trap', summary: 'このマスに入った他人にHP−2＋足止め' },
+  campfire: { name: '焚き火', ap: 1, inputs: [need(['wood', 2])], builds: 'campfire', summary: 'ここで食べると回復+1、夜は周りが明るい。ただし煙は全員に見える（4ターン）' },
   hut: { name: '小屋', ap: 3, inputs: [need(['wood', 4], ['grass', 2]), need(['wood', 2], ['grass', 2], ['nails', 1])], builds: 'hut', summary: '休息の回復が倍。釘があれば木材が少なく済む' },
 };
 
@@ -473,3 +490,10 @@ export const ITEMS: Record<ItemId, { name: string; use?: ItemUse }> = {
   fishing_rod: { name: '釣竿' },
   canteen: { name: '水筒' },
 };
+
+/** 火起こし名人は狼煙と焚き火の木材が1少ない */
+export function recipeInputs(id: RecipeId, publicTrait: TraitId | null): { item: ItemId; count: number }[][] {
+  const recipe = RECIPES[id];
+  if (publicTrait !== 'fire_maker' || (recipe.builds !== 'smoke' && recipe.builds !== 'campfire')) return recipe.inputs;
+  return recipe.inputs.map((set) => set.map((need) => (need.item === 'wood' ? { ...need, count: Math.max(1, need.count - 1) } : need)));
+}

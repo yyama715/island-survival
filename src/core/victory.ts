@@ -18,7 +18,7 @@ export const hasRole = (player: Pick<PlayerState, 'job' | 'extraJob'>, job: JobI
 
 export function exploreTarget(state: GameState): number {
   const land = state.map.terrain.filter((t) => t !== 'sea').length;
-  return Math.ceil(land * GOALS.exploreRatio);
+  return Math.ceil(land * GOALS.exploreRatio[state.mapSize]);
 }
 
 /** 持ち物の中から、フルコースに使う食材を選ぶ。足りなければ null。島の主は2ジャンル分 */

@@ -5,7 +5,7 @@ import { simulate } from './simulate';
 describe('マイルストーン6の調整値', () => {
   it('シミュレータで決めた値になっている', () => {
     // test-setup.ts がルールのテスト用に AP を3へ戻すので、元の値は data.ts の初期値で確かめる
-    expect(GOALS).toMatchObject({ warPoints: 6, healsNeeded: 3, exploreRatio: 0.25, specialsNeeded: 2, courseGenres: 4, lordCeiling: 10, lordHoldTurns: 4, fortHoldTurns: 3 });
+    expect(GOALS).toMatchObject({ warPoints: 6, healsNeeded: 3, exploreRatio: { small: 0.25, medium: 0.2, large: 0.15 }, specialsNeeded: 2, courseGenres: 4, lordCeiling: 10, lordHoldTurns: 4, fortHoldTurns: 3 });
     expect(FINAL).toMatchObject({ sinkEveryTurns: 2, stormDamage: 0, attackBonus: 2 });
   });
 

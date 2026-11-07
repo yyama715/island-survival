@@ -1,5 +1,6 @@
 // 9章 天候、イベント、動物、潮位上昇、最終局面。8.5 幽霊。
 import {
+  CATCH_UP,
   BOAR,
   CASTAWAY_REWARDS,
   CRITTER_RESPAWN_TURNS,
@@ -189,6 +190,17 @@ export function startOfTurn(state: GameState, rng: Rng, events: GameEvent[]) {
       if (structure.hp <= 0) delete state.structures[Number(cell)];
     }
     return;
+  }
+
+  // テストプレイ：最下位の救済。朝、一番苦しい人の足元に物が流れ着く
+  if (isDay && rng.next() < CATCH_UP.chance) {
+    const alive = state.players.filter((p) => p.alive);
+    const score = (p: PlayerState) => p.hp + p.hunger + p.water + p.inventory.reduce((n, s) => n + s.count, 0);
+    const weakest = [...alive].sort((a, b) => score(a) - score(b) || a.id - b.id)[0];
+    if (weakest && alive.length > 1) {
+      const item = rng.pick(CATCH_UP.items);
+      if (receive(weakest, [{ item, count: 1 }]).gained.length > 0) events.push({ type: 'driftFound', playerId: weakest.id, item });
+    }
   }
 
   // 小動物の復活

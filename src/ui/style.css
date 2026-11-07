@@ -421,6 +421,7 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
 .p2 { background: #a052d8; }
 .p3 { background: #f08a2c; }
 .p4 { background: #1fb39c; }
+.p5 { background: #e85a9c; }
 
 .side {
   grid-area: side;
@@ -495,3 +496,11 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
 .sound-row input[type="checkbox"] { width: 22px; min-height: 22px; accent-color: var(--accent); }
 
 .rulebook-link { display: block; padding: 6px; color: var(--gold); text-align: center; font-size: 14px; }
+
+/* 賞金首のあたり（3×3） */
+.tile.bounty-zone::after { content: ""; position: absolute; inset: 2px; z-index: 3; border: 2px dashed #ff5a3c; pointer-events: none; }
+.tag-ally { background: #9fd6ff; }
+.deal { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border: 2px dashed var(--dash); }
+.deal-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.deal-row select { min-height: 36px; padding: 2px 6px; font-size: 14px; }
+.deal-row select.count { width: 64px; }

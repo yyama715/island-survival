@@ -8,11 +8,16 @@ import {
   HUNT_AP,
   SWIM_COST,
   WEATHER,
+  ARCHER,
+  BIG_EATER_FOOD,
   BIG_EATER_HP,
+  CAMPFIRE,
   EARLY_RISER_BONUS,
   EXPLORE_AP,
   FISHER_FISH_MULTIPLIER,
   HEAL_AP,
+  HEAL_RANGE,
+  recipeInputs,
   LOST_SENSE_DRIFT,
   LOST_SENSE_GATHER,
   MAP_FRAGMENT_RADIUS,
@@ -78,6 +83,7 @@ import { BACKPACK_SLOTS, GOALS, JOBS, RAFT, SMOKE, STEAL_PRIORITY } from './role
 import { courseIngredients, findWinner, hasRole, isNearVictory, newProgress } from './victory';
 import { aidNpc, drownCheck, haunt, huntNpc, moveNpcs, seedAnimals, startOfTurn } from './world';
 import type {
+  Trade,
   JobId,
   PlayerSetup,
   Structure,
@@ -153,6 +159,9 @@ export function playerVision(state: GameState, player: PlayerState): number {
   if (hasRole(player, 'explorer')) radius += 1;
   if (phaseOf(state.turn) === 'day' && hasItem(player, 'binoculars')) radius += 1;
   if (player.exploreTurn === state.turn) radius += 1;
+  if (phaseOf(state.turn) === 'night' && state.structures[cellIndex(state, player.x, player.y)]?.kind === 'campfire') {
+    radius += CAMPFIRE.nightVision;
+  }
   if (state.world) {
     // 9章 雨の日は視界−1。8.5 幽霊の濃霧の中も視界−1
     if (state.weather === 'rain') radius -= 1;
@@ -173,7 +182,10 @@ export function moveCostOf(state: GameState, player: PlayerState, index: number)
 
 /** 特性や道具まで含めて、夜に誰なのかまで見えるか */
 export const seesNames = (state: GameState, viewer: PlayerState, other: PlayerState) =>
-  phaseOf(state.turn) === 'day' || viewer.publicTrait === 'night_eyes' || hasItem(other, 'torch');
+  phaseOf(state.turn) === 'day' ||
+  viewer.publicTrait === 'night_eyes' ||
+  hasItem(other, 'torch') ||
+  (viewer.publicTrait === 'sentinel' && chebyshev(viewer.x, viewer.y, other.x, other.y) <= 1);
 
 export function visibleCells(state: GameState, player: PlayerState): number[] {
   const { width, height, terrain } = state.map;
@@ -325,6 +337,8 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     cursedTurn: 0,
     hpAtTurnStart: INITIAL_HP,
     swamTurn: 0,
+    escapeDay: 0,
+    survivorHeld: false,
   }));
   const state: GameState = {
     seed,
@@ -357,6 +371,11 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     letters: {},
     whisperIntents: [],
     whispers: [],
+    trades: [],
+    nextTradeId: 1,
+    alliances: [],
+    bounties: [],
+    mapSize: options.mapSize ?? 'small',
     players,
   };
   options.setups?.forEach((setup, id) => applySetup(state, state.players[id], setup, rng));
@@ -466,6 +485,12 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
       if (e.kind === 'item' && e.rolls.some((r) => r.item === 'fish')) weights[i] *= FISHER_FISH_MULTIPLIER;
     });
   }
+  // 漂流者の知恵：砂浜で布とロープ片が出やすい
+  if (player.secretTrait === 'castaway_wisdom' && terrain === 'beach') {
+    entries.forEach((e, i) => {
+      if (e.kind === 'item' && e.rolls.some((r) => r.item === 'cloth' || r.item === 'rope_scrap')) weights[i] *= 2;
+    });
+  }
   // 4.3 方向音痴、9.1 漂流者の同行、8.5 幽霊の守護は採取率が上がる
   const follower = state.npcs.some((n) => n.followerOf === player.id);
   const blessed = state.blessed.some((b) => b.untilTurn >= state.turn && b.cells.includes(index));
@@ -531,12 +556,12 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
     player.dryStreak = 0;
     const received = receive(player, [rollItem(rng, entry.rolls, player)]);
     events.push({ type: 'gathered', playerId, terrain, pity, ...received });
-    fishCaught(player, received.gained, rng, events);
+    fishCaught(state, player, received.gained, rng, events);
   }
 }
 
 /** 4.5 漁師の釣果を数える。天井に届くと島の主がかかる */
-function fishCaught(player: PlayerState, gained: ItemStack[], rng: Rng, events: GameEvent[]) {
+function fishCaught(state: GameState, player: PlayerState, gained: ItemStack[], rng: Rng, events: GameEvent[]) {
   if (!hasRole(player, 'fisher')) return;
   const caught = gained.filter((s) => s.item === 'fish').reduce((sum, s) => sum + s.count, 0);
   if (caught === 0 || hasItem(player, 'island_lord')) return;
@@ -549,10 +574,11 @@ function fishCaught(player: PlayerState, gained: ItemStack[], rng: Rng, events: 
   p.lordCaughtBefore = true;
   p.lordHeldTurns = 0;
   events.push({ type: 'lordCaught' });
+  postBounty(state, player.x, player.y, state.turn + 1, rng, events);
 }
 
 /** 泉・川は確実に水が取れるので、枯渇・夜・天井の対象にしない */
-function gatherWater(player: PlayerState, terrain: TerrainId, rng: Rng, events: GameEvent[]) {
+function gatherWater(state: GameState, player: PlayerState, terrain: TerrainId, rng: Rng, events: GameEvent[]) {
   const playerId = player.id;
   const stacks: ItemStack[] = [];
   if (hasAny(player, [CANTEEN])) stacks.push({ item: 'water', count: 1 });
@@ -566,7 +592,7 @@ function gatherWater(player: PlayerState, terrain: TerrainId, rng: Rng, events: 
   if (stacks.length > 0) {
     const received = receive(player, stacks);
     events.push({ type: 'gathered', playerId, terrain, pity: false, ...received });
-    fishCaught(player, received.gained, rng, events);
+    fishCaught(state, player, received.gained, rng, events);
   }
 }
 
@@ -631,7 +657,8 @@ function takeRelics(state: GameState, player: PlayerState, events: GameEvent[]) 
 function weaponsBestFirst(player: PlayerState, night: boolean): WeaponDef[] {
   const expected = (w: WeaponDef) => w.hit * ((w.rollsD3 ? 2 : 0) + w.bonus);
   const owned = player.inventory.flatMap(({ item }) => {
-    const weapon = WEAPONS[item];
+    let weapon = WEAPONS[item];
+    if (weapon && item === 'bow' && player.publicTrait === 'archer') weapon = { ...weapon, range: weapon.range + ARCHER.range, hit: weapon.hit + ARCHER.hit };
     return weapon && !(night && weapon.ranged) ? [weapon] : [];
   });
   return [...owned, UNARMED].sort((a, b) => expected(b) - expected(a));
@@ -826,6 +853,13 @@ function strike(
     if (target.hp === 0) {
       if (soldier) attacker.progress.warPoints += GOALS.warPerKill;
       target.killerId = attacker.id;
+      // 賞金稼ぎ：勝利目前の人を倒すと持ち物をすべて受け取る（持ちきれない分は遺品）
+      if (attacker.secretTrait === 'bounty_hunter' && state.nearNotified.includes(target.id) && target.inventory.length > 0) {
+        const { gained, lost } = receive(attacker, target.inventory);
+        target.inventory = lost;
+        reveal(attacker, events);
+        events.push({ type: 'bountyClaimed', playerId: attacker.id, items: gained });
+      }
       eliminate(state, target, events);
     } else if (distance === 0 && rng.next() < COMBAT.counterChance) {
       // 8.3 反撃。殴り返せるのは同じマスにいるときだけ
@@ -834,6 +868,20 @@ function strike(
     }
   }
 
+  // 逃げ足：攻撃を受けて生き残ると1マス離れる（1日1回）
+  if (hit && target.alive && target.publicTrait === 'quick_escape' && target.escapeDay !== dayOf(state.turn)) {
+    const away = Object.values(DIRECTION_DELTA).map(([dx, dy]) => ({ x: target.x + dx, y: target.y + dy }))
+      .filter((p) => p.x >= 0 && p.y >= 0 && p.x < state.map.width && p.y < state.map.height)
+      .filter((p) => TERRAIN[state.map.terrain[cellIndex(state, p.x, p.y)]].moveCost !== null)
+      .sort((a, b) => chebyshev(b.x, b.y, attacker.x, attacker.y) - chebyshev(a.x, a.y, attacker.x, attacker.y))[0];
+    if (away) {
+      target.escapeDay = dayOf(state.turn);
+      target.x = away.x;
+      target.y = away.y;
+      refreshMemory(state, target);
+      events.push({ type: 'escaped', playerId: target.id });
+    }
+  }
   events.push({
     type: 'attackResult',
     attackerId: attacker.id,
@@ -877,6 +925,12 @@ function resolveAttack(
 
   const target = state.players[targetId];
   const night = phaseOf(state.turn) === 'night';
+  // 同盟の相手を攻撃すると同盟は終わり、全員に知らされる
+  const pact = target && state.alliances.find((a) => (a.a === playerId && a.b === targetId) || (a.b === playerId && a.a === targetId));
+  if (pact) {
+    state.alliances = state.alliances.filter((a) => a !== pact);
+    events.push({ type: 'allianceBroken', betrayerId: playerId, victimId: targetId });
+  }
   // 投石と瓶は自分で選んだときだけ使う。持っていなければ不発
   const candidates = choice.throwStone
     ? !night && hasItem(player, THROW_ITEM) ? [THROW] : []
@@ -948,7 +1002,11 @@ function useItem(state: GameState, player: PlayerState, item: ItemId, rng: Rng, 
   removeItem(player, item, 1);
   // 4.2 料理人と、鍋・塩があると食料の回復が増える
   const foodBonus = effect.food
-    ? (hasRole(player, 'cook') ? 1 : 0) + (hasItem(player, 'pot') ? 1 : 0) + (effect.salted && hasItem(player, 'salt') ? 1 : 0)
+    ? (hasRole(player, 'cook') ? 1 : 0) +
+      (hasItem(player, 'pot') ? 1 : 0) +
+      (effect.salted && hasItem(player, 'salt') ? 1 : 0) +
+      (player.publicTrait === 'big_eater' ? BIG_EATER_FOOD : 0) +
+      (state.structures[cellIndex(state, player.x, player.y)]?.kind === 'campfire' ? CAMPFIRE.food : 0)
     : 0;
   const hunger = Math.min(MAX_HUNGER - player.hunger, (effect.hunger ?? 0) + foodBonus);
   const water = Math.min(MAX_WATER - player.water, effect.water ?? 0);
@@ -1038,7 +1096,7 @@ function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: R
     (state.ship !== null ||
       state.turn < SMOKE.firstTurn ||
       state.turn > SMOKE.lastTurn ||
-      (state.world && state.weather === 'rain'));
+      (state.world && state.weather === 'rain' && player.publicTrait !== 'fire_maker'));
   if (wrongJob || wrongPlace || smokeBlocked) {
     events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
     return;
@@ -1047,7 +1105,7 @@ function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: R
   for (const stack of player.inventory) counts.set(stack.item, (counts.get(stack.item) ?? 0) + stack.count);
   const inputs = recipe.course
     ? courseIngredients(counts)
-    : recipe.inputs.find((set) => set.every(({ item, count }) => countItem(player, item) >= count));
+    : recipeInputs(recipeId, player.publicTrait).find((set) => set.every(({ item, count }) => countItem(player, item) >= count));
   if (!inputs) {
     events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
     return;
@@ -1066,6 +1124,7 @@ function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: R
   }
   player.ap -= apCost;
   if (recipe.builds) state.structures[index] = { kind: recipe.builds, ownerId: playerId };
+  if (recipe.builds === 'campfire') state.structures[index].expiresTurn = state.turn + CAMPFIRE.turns;
   events.push({ type: 'crafted', playerId, recipe: recipeId, gained: recipe.output ? [recipe.output] : [], lost: [] });
   if (recipe.builds === 'fort') {
     const fort = state.structures[index];
@@ -1083,7 +1142,7 @@ function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: R
   }
 }
 
-/** 4.2 医師の治療。同じマスの相手に効く */
+/** 4.2 医師の治療。テストプレイを受けて、隣のマスの相手まで届く */
 function heal(state: GameState, player: PlayerState, targetId: number, events: GameEvent[]) {
   const playerId = player.id;
   const target = state.players[targetId];
@@ -1091,7 +1150,7 @@ function heal(state: GameState, player: PlayerState, targetId: number, events: G
     events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
   } else if (player.ap < HEAL_AP) {
     events.push({ type: 'blocked', playerId, reason: 'noAp' });
-  } else if (!target?.alive || target.id === playerId || target.x !== player.x || target.y !== player.y) {
+  } else if (!target?.alive || target.id === playerId || chebyshev(target.x, target.y, player.x, player.y) > HEAL_RANGE) {
     player.ap -= HEAL_AP;
     events.push({ type: 'healed', playerId, targetId: null, hp: 0, maxHpUp: false });
   } else {
@@ -1223,6 +1282,116 @@ export function sendWhisper(previous: GameState, playerId: number, id: number, t
   return state;
 }
 
+/** 賞金首。本人がいるあたりの3×3（中心は少しずらす）を全員に知らせる */
+function postBounty(state: GameState, x: number, y: number, untilTurn: number, rng: Rng, events: GameEvent[]) {
+  const cx = Math.max(0, Math.min(state.map.width - 1, x + rng.int(-1, 1)));
+  const cy = Math.max(0, Math.min(state.map.height - 1, y + rng.int(-1, 1)));
+  state.bounties.push({ x: cx, y: cy, untilTurn });
+  events.push({ type: 'bountyPosted', x: cx, y: cy });
+}
+
+/** 6.2 取引の交換。離れていたらやめ、裏切った側は渡さない */
+function exchange(state: GameState, trade: Trade, withheld: Set<string>): GameEvent[] {
+  const a = state.players[trade.from];
+  const b = state.players[trade.to];
+  if (!a.alive || !b.alive || chebyshev(a.x, a.y, b.x, b.y) > 1) return [];
+  const aGives = !withheld.has(`${a.id}:${trade.id}`) && countItem(a, trade.give.item) >= trade.give.count;
+  const bGives = !withheld.has(`${b.id}:${trade.id}`) && countItem(b, trade.take.item) >= trade.take.count;
+  if (aGives) removeItem(a, trade.give.item, trade.give.count);
+  if (bGives) removeItem(b, trade.take.item, trade.take.count);
+  // 持ちきれない分は足元に置く
+  const drop = (player: PlayerState, stack: ItemStack) => {
+    const { lost } = receive(player, [stack]);
+    if (lost.length > 0) {
+      const index = cellIndex(state, player.x, player.y);
+      state.relics[index] = [...(state.relics[index] ?? []), ...lost];
+    }
+  };
+  if (aGives) drop(b, trade.give);
+  if (bGives) drop(a, trade.take);
+  return [
+    { type: 'traded', playerId: a.id, withId: b.id, got: bGives ? trade.take : null, gave: aGives ? trade.give : null, betrayed: !bGives },
+    { type: 'traded', playerId: b.id, withId: a.id, got: aGives ? trade.give : null, gave: bGives ? trade.take : null, betrayed: !aGives },
+  ];
+}
+
+const openWhisper = (state: GameState, playerId: number, whisperId: number) => {
+  const whisper = state.whispers.find((w) => w.id === whisperId);
+  if (!whisper || whisper.status !== 'open' || (whisper.from !== playerId && whisper.to !== playerId)) return null;
+  return whisper;
+};
+
+/** 6.2 密談の中で取引を持ちかける。渡す物は今持っている物だけ */
+export function proposeTrade(previous: GameState, playerId: number, whisperId: number, give: ItemStack, take: ItemStack): GameState | null {
+  const found = openWhisper(previous, playerId, whisperId);
+  if (!found || found.tradeId !== undefined) return null;
+  const valid = (s: ItemStack) => Object.hasOwn(ITEMS, s.item) && Number.isInteger(s.count) && s.count >= 1 && s.count <= STACK_SIZE;
+  if (!valid(give) || !valid(take)) return null;
+  if (countItem(previous.players[playerId], give.item) < give.count) return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  const whisper = state.whispers.find((w) => w.id === whisperId)!;
+  const id = state.nextTradeId++;
+  const other = whisper.from === playerId ? whisper.to : whisper.from;
+  state.trades.push({ id, from: playerId, give: { item: give.item, count: give.count }, to: other, take: { item: take.item, count: take.count }, status: 'proposed' });
+  whisper.tradeId = id;
+  return state;
+}
+
+export function respondTrade(previous: GameState, playerId: number, tradeId: number, accept: boolean): GameState | null {
+  const trade = previous.trades.find((t) => t.id === tradeId);
+  if (!trade || trade.to !== playerId || trade.status !== 'proposed') return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  state.trades.find((t) => t.id === tradeId)!.status = accept ? 'agreed' : 'refused';
+  return state;
+}
+
+/** 同盟の申し込み。同盟は1人1つまで */
+export function proposeAlliance(previous: GameState, playerId: number, whisperId: number): GameState | null {
+  const found = openWhisper(previous, playerId, whisperId);
+  if (!found || found.allianceFrom !== undefined || found.allianceRefused) return null;
+  const other = found.from === playerId ? found.to : found.from;
+  if (previous.alliances.some((a) => [a.a, a.b].includes(playerId) || [a.a, a.b].includes(other))) return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  state.whispers.find((w) => w.id === whisperId)!.allianceFrom = playerId;
+  return state;
+}
+
+/** 同盟に応じる。成立したら全員に知らせる */
+export function respondAlliance(previous: GameState, playerId: number, whisperId: number, accept: boolean): { state: GameState; events: GameEvent[] } | null {
+  const found = openWhisper(previous, playerId, whisperId);
+  if (!found || found.allianceFrom === undefined || found.allianceFrom === playerId) return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  const whisper = state.whispers.find((w) => w.id === whisperId)!;
+  const from = whisper.allianceFrom!;
+  delete whisper.allianceFrom;
+  if (!accept) {
+    whisper.allianceRefused = true;
+    return { state, events: [] };
+  }
+  if (state.alliances.some((a) => [a.a, a.b].includes(playerId) || [a.a, a.b].includes(from))) return { state, events: [] };
+  state.alliances.push({ a: from, b: playerId });
+  return { state, events: [{ type: 'allianceFormed', a: from, b: playerId }] };
+}
+
+/** 裏切りの勘：密談した相手が自分への攻撃を予約したら、1回だけ知らせる */
+export function senseBetrayal(previous: GameState, attackerId: number, plan: PlanAction[]): { state: GameState; notices: { to: number; event: GameEvent }[] } {
+  const targets = new Set(plan.flatMap((a) => (a.type === 'attack' && a.who !== undefined ? [a.who] : [])));
+  const notices: { to: number; event: GameEvent }[] = [];
+  let state = previous;
+  for (const id of targets) {
+    const target = previous.players[id];
+    if (!target?.alive || target.secretTrait !== 'betrayal_sense' || target.secretUsed) continue;
+    const talked = previous.whispers.some(
+      (w) => w.status === 'open' && ((w.from === id && w.to === attackerId) || (w.to === id && w.from === attackerId)),
+    );
+    if (!talked) continue;
+    if (state === previous) state = JSON.parse(JSON.stringify(previous));
+    state.players[id].secretUsed = true;
+    notices.push({ to: id, event: { type: 'betrayalSensed', playerId: id, fromId: attackerId } });
+  }
+  return { state, notices };
+}
+
 export function applyAction(previous: GameState, action: Action): ActionResult {
   const state: GameState = JSON.parse(JSON.stringify(previous));
   const events: GameEvent[] = [];
@@ -1236,6 +1405,10 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     // 2.4 開始フェーズ。満腹度と水分は昼ターンにだけ減る。0のときのダメージは毎ターン
     const isDay = phaseOf(state.turn) === 'day';
     state.scouts = state.scouts.filter((scout) => scout.untilTurn >= state.turn);
+    state.bounties = state.bounties.filter((b) => b.untilTurn >= state.turn);
+    for (const [cell, structure] of Object.entries(state.structures)) {
+      if (structure.expiresTurn !== undefined && structure.expiresTurn < state.turn) delete state.structures[Number(cell)];
+    }
     if (state.world) startOfTurn(state, rng, events);
     for (const player of state.players) {
       // 4.3 執念：次の朝にランダムな砂浜で復活する
@@ -1255,8 +1428,17 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
         player.hunger = Math.max(0, player.hunger - (player.publicTrait === 'big_eater' ? 2 : 1));
         player.water = Math.max(0, player.water - 1);
       }
-      const hunger = player.hunger === 0 ? STATUS_DAMAGE.starving : 0;
-      const thirst = player.water === 0 ? STATUS_DAMAGE.thirsty : 0;
+      let hunger = player.hunger === 0 ? STATUS_DAMAGE.starving : 0;
+      let thirst = player.water === 0 ? STATUS_DAMAGE.thirsty : 0;
+      // サバイバー：飢えか渇きの最初のターンは耐える
+      if (player.secretTrait === 'survivor') {
+        if (hunger + thirst > 0 && !player.survivorHeld) {
+          player.survivorHeld = true;
+          hunger = 0;
+          thirst = 0;
+          events.push({ type: 'survivorHeld', playerId: player.id });
+        } else if (hunger + thirst === 0) player.survivorHeld = false;
+      }
       const poison = player.poisonTurns > 0 ? STATUS_DAMAGE.poison : 0;
       const bleed = player.bleeding ? STATUS_DAMAGE.bleed : 0;
       if (player.poisonTurns > 0) player.poisonTurns -= 1;
@@ -1289,7 +1471,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     const previousOrder = state.initiative.map((entry) => entry.playerId);
     const ship = state.ship;
     if (ship && !ship.gone) {
-      if (state.turn === ship.arrivesTurn - 1) events.push({ type: 'shipSoon', x: ship.x, y: ship.y });
+      if (SMOKE.publicLeadTurns > 0 && state.turn === ship.arrivesTurn - SMOKE.publicLeadTurns) events.push({ type: 'shipSoon', x: ship.x, y: ship.y });
       if (state.turn === ship.arrivesTurn) {
         events.push({ type: 'shipArrived', x: ship.x, y: ship.y });
         // すでにそのマスにいる人は、行動順の早い人から乗る
@@ -1537,11 +1719,17 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       } else {
         player.secretUsed = true;
         events.push({ type: 'nearVictory' });
+        const land = state.map.terrain.flatMap((t, i) => (t === 'sea' ? [] : [i]));
+        const spot = rng.pick(land);
+        postBounty(state, spot % state.map.width, Math.floor(spot / state.map.width), state.turn + 1, rng, events);
       }
       break;
     }
     case 'craft':
       craft(state, player, action.recipe, rng, events);
+      break;
+    case 'withhold':
+      // 取引の交換のときに使う。ここでは何もしない
       break;
     case 'rest': {
       if (player.ap <= 0) {
@@ -1638,7 +1826,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       player.hidden = false;
       const index = cellIndex(state, player.x, player.y);
       const terrain = state.map.terrain[index];
-      if (terrain === 'spring' || terrain === 'river') gatherWater(player, terrain, rng, events);
+      if (terrain === 'spring' || terrain === 'river') gatherWater(state, player, terrain, rng, events);
       else if (terrain === 'cave' || terrain === 'wreck' || terrain === 'ruins') {
         gatherSpecial(state, player, index, terrain, rng, events);
       } else gatherFromTable(state, player, index, rng, events);
@@ -1743,9 +1931,27 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     steps.push({ actorId: null, events: [{ type: 'gameFinished', winnerId: state.winnerId }], state });
   };
 
+  /** 6.2 合意した取引は、行動順が先の人の手番の始めに同時に交換する */
+  const withheld = new Set<string>();
+  for (const [id, plan] of Object.entries(plans)) {
+    for (const action of plan ?? []) if (action.type === 'withhold') withheld.add(`${id}:${action.tradeId}`);
+  }
+  const runTrades = (actorId: number) => {
+    const ready = state.trades.filter((t) => t.status === 'agreed' && (t.from === actorId || t.to === actorId));
+    if (ready.length === 0) return;
+    state = JSON.parse(JSON.stringify(state)) as GameState;
+    const events: GameEvent[] = [];
+    for (const trade of state.trades.filter((t) => t.status === 'agreed' && (t.from === actorId || t.to === actorId))) {
+      trade.status = 'done';
+      events.push(...exchange(state, trade, withheld));
+    }
+    steps.push({ actorId, events, state });
+  };
+
   for (const { playerId } of previous.initiative) {
     if (!state.players[playerId].alive) continue;
     steps.push({ actorId: playerId, events: [{ type: 'actorTurn', playerId }], state });
+    runTrades(playerId);
     const plan = resolved.get(playerId)!;
     for (let i = 0; i < plan.length; i++) {
       const before = state;
@@ -1788,6 +1994,7 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     }
   }
   state.whisperIntents = [];
+  state.trades = [];
   if (whisperEvents.length > 0) steps.push({ actorId: null, events: whisperEvents, state });
 
   // 9.1 解決の最後に動物が動く。9.2 沈んだマスに残っていると脱落する
@@ -1850,6 +2057,9 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     if (!state.nearNotified.includes(player.id) && isNearVictory(state, player)) {
       state.nearNotified.push(player.id);
       events.push({ type: 'nearVictory' });
+      const rng = new Rng(state.rngState);
+      postBounty(state, player.x, player.y, state.turn, rng, events);
+      state.rngState = rng.state;
     }
   }
   steps.push({ actorId: null, events, state });

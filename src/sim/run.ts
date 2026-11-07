@@ -1,6 +1,7 @@
 // 使い方: npm run sim -- --games 3000 --ap 4 --level hard --set GOALS.warPoints=6
 import {
   BALANCE,
+  CATCH_UP,
   COMBAT,
   DEPLETION,
   FATIGUE,
@@ -16,7 +17,7 @@ import {
 } from '../core/index';
 import { formatReport, simulate } from './simulate';
 
-const TABLES: Record<string, Record<string, unknown>> = { BALANCE, COMBAT, DEPLETION, FATIGUE, FINAL, GOALS, SMOKE, WEATHER };
+const TABLES: Record<string, Record<string, unknown>> = { BALANCE, CATCH_UP, COMBAT, DEPLETION, FATIGUE, FINAL, GOALS, SMOKE, WEATHER };
 
 const args = process.argv.slice(2);
 const option = (name: string) => {
@@ -43,7 +44,7 @@ if (option('ap')) BALANCE.apPerTurn = Number(option('ap'));
 const games = Number(option('games') ?? 300);
 const report = simulate({
   games,
-  players: (option('players') ?? '3,4,5').split(',').map(Number),
+  players: (option('players') ?? '3,4,5,6').split(',').map(Number),
   sizes: (option('sizes') ?? 'small,medium,large').split(',') as MapSize[],
   levels: (option('level') ?? 'normal,hard').split(',') as CpuLevel[],
   seedPrefix: option('seed') ?? 'sim',

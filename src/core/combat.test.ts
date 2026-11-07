@@ -228,7 +228,7 @@ describe('命中とダメージ', () => {
       return state;
     };
     const straight = applyAction(adjacent(), { type: 'attack', playerId: 0, targetId: 1 });
-    expect(straight.events.map((e) => e.type)).toEqual(['attackResult']);
+    expect(straight.events.map((e) => e.type).filter((t) => t !== 'fatigued')).toEqual(['attackResult']);
     expect(straight.state.players[0].ap).toBe(2);
     expect(rate(adjacent)).toBeCloseTo(0.6, 1);
 

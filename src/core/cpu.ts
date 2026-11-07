@@ -1,5 +1,5 @@
 // 10.3 CPUプレイヤー。人間と同じ見え方（PlayerView）だけで判断し、霧の向こうは見えない。
-import { ITEMS, TERRAIN, WATER_TERRAINS, WEAPONS } from './data';
+import { HEAL_RANGE, ITEMS, TERRAIN, WATER_TERRAINS, WEAPONS } from './data';
 import type { Rng } from './rng';
 import { FOOD_GENRES, ITEM_GENRE, JOBS, type FoodGenre } from './roles';
 import type { Direction, ItemId, JobId, PlanAction, TerrainId } from './types';
@@ -136,12 +136,16 @@ export function planForCpu(view: PlayerView, level: CpuLevel, rng: Rng): PlanAct
   const edible = () =>
     view.me.inventory.filter((s) => ITEMS[s.item].use?.food && (s.item !== 'mushroom' || view.me.hunger <= LOW_HUNGER) && count(s.item) > 0);
 
+  const fromCell0 = () => cellAt(view, here().x, here().y)!;
   // ①生存。回復できるものは使う
   if (view.me.bleeding) {
     if (has('bandage')) add({ type: 'use', item: 'bandage' });
     else if (has('antiseptic')) add({ type: 'use', item: 'antiseptic' });
   }
   if (view.me.hp <= FIGHT_HP && has('medicine')) add({ type: 'use', item: 'medicine' });
+  if (view.me.hunger <= EAT_BELOW && view.phase === 'night' && count('wood') >= 3 && edible().length > 0 && !fromCell0().structure) {
+    add({ type: 'craft', recipe: 'campfire' });
+  }
   if (view.me.hunger <= EAT_BELOW) {
     const foods = edible();
     const spare = job === 'cook' ? foods.find((s) => genreCount(ITEM_GENRE[s.item]) > 1) : foods[0];
@@ -213,6 +217,12 @@ export function planForCpu(view: PlayerView, level: CpuLevel, rng: Rng): PlanAct
   }
   if (attacked() && view.finalPhase) return plan;
 
+  // 賞金首（勝利目前の人）を止めに行く
+  const bounty = view.marks.find((m) => m.kind === 'bounty');
+  if (bounty && !attacked() && view.me.hp >= HUNT_MIN_HP && rng.next() < willing && !isProtected(view)) {
+    if (walk((cell) => Math.abs(cell.x - bounty.x) <= 1 && Math.abs(cell.y - bounty.y) <= 1)) fight();
+  }
+
   // ②自分の勝利条件を進める
   const seesPeople = (cell: CellView) => cell.figures.some((figure) => figure.kind !== 'self');
   for (const role of roles) {
@@ -250,7 +260,7 @@ export function planForCpu(view: PlayerView, level: CpuLevel, rng: Rng): PlanAct
       } else walk((cell) => cell.structure === 'fort');
     } else if (role === 'doctor') {
       for (const other of others) {
-        if (other.cell.x === here().x && other.cell.y === here().y) {
+        if (Math.max(Math.abs(other.cell.x - here().x), Math.abs(other.cell.y - here().y)) <= HEAL_RANGE) {
           add({ type: 'heal', x: other.cell.x, y: other.cell.y, ...(other.who === undefined ? {} : { who: other.who }) });
         }
       }
@@ -277,7 +287,7 @@ export function planForCpu(view: PlayerView, level: CpuLevel, rng: Rng): PlanAct
   }
 
   // 狼煙の材料がそろっていれば山へ
-  if (here().ap > 0 && view.day >= 3 && count('wood') >= 5 && (has('flint') || has('matches')) && !roles.includes('carpenter')) {
+  if (here().ap > 0 && view.day >= 3 && count('wood') >= 3 && (has('flint') || has('matches')) && !roles.includes('carpenter')) {
     if (fromCell().terrain === 'mountain') add({ type: 'craft', recipe: 'smoke' });
     else walk((cell) => cell.terrain === 'mountain');
   }

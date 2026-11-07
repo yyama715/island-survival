@@ -488,6 +488,22 @@ describe('ルーム', () => {
       expect(withCpu(null).last('draft').names).toEqual(['h']);
     });
 
+    it('6人のルームもCPUで埋めて始められる', () => {
+      const host = new FakeClient(room);
+      host.say({ t: 'create', name: 'h', setup: { players: 6, mapSize: 'small', planSeconds: 60, cpuLevel: 'normal' } });
+      expect(host.last('lobby').setup.players).toBe(6);
+      host.say({ t: 'start' });
+      expect(host.last('draft').names).toHaveLength(6);
+      pickAll(host);
+      expect(host.last('planning').view.roster).toHaveLength(6);
+    });
+
+    it('7人は作れず3人になる', () => {
+      const host = new FakeClient(room);
+      host.say({ t: 'create', name: 'h', setup: { players: 7, mapSize: 'small', planSeconds: 60 } });
+      expect(host.last('lobby').setup.players).toBe(3);
+    });
+
     it('おかしな強さは指定なしになる', () => {
       expect(withCpu('nope' as never).last('draft').names).toEqual(['h']);
     });

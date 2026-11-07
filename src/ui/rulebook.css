@@ -13,7 +13,7 @@
 html, body { margin: 0; background: #fff; color: var(--ink); }
 body {
   font-family: "Yu Gothic", "YuGothic", "Hiragino Sans", "Meiryo", sans-serif;
-  font-size: 8.4pt;
+  font-size: 8.2pt;
   line-height: 1.42;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
@@ -54,7 +54,7 @@ h2 {
   font-size: 11pt;
   font-weight: 400;
 }
-h3 { margin: 2.5mm 0 1mm; font-size: 10pt; color: var(--navy); border-bottom: 1.5px solid var(--navy); }
+h3 { margin: 1.5mm 0 0.8mm; font-size: 10pt; color: var(--navy); border-bottom: 1.5px solid var(--navy); }
 p { margin: 1mm 0; }
 ul, ol { margin: 1mm 0; padding-left: 5mm; }
 li { margin: 0.4mm 0; }
@@ -63,7 +63,7 @@ b { color: var(--accent); }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 6mm; }
 .cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 4mm; }
 
-table { width: 100%; border-collapse: collapse; margin: 1mm 0; font-size: 7.7pt; }
+table { width: 100%; border-collapse: collapse; margin: 1mm 0; font-size: 7.4pt; }
 th, td { padding: 0.5mm 1.2mm; border: 1px solid var(--line); vertical-align: top; text-align: left; }
 th { background: var(--soft); font-weight: 700; white-space: nowrap; }
 td.icon, th.icon { width: 8mm; text-align: center; padding: 0.5mm; }

@@ -46,6 +46,8 @@ export interface SimReport {
   deathsByAttack: number;
   deathsOther: number;
   deathCauses: Record<string, number>;
+  /** 新しいルールが起きた回数 */
+  happenings: Record<string, number>;
   /** 職業ごとの到達度の合計（1で達成） */
   goalSum: Partial<Record<JobId, number>>;
   /** 空腹か渇きのターンに使ったAP／使ったAP全体 */
@@ -79,6 +81,7 @@ function newReport(): SimReport {
     deathsByAttack: 0,
     deathsOther: 0,
     deathCauses: {},
+    happenings: {},
     goalSum: {},
     survivalAp: 0,
     spentAp: 0,
@@ -118,6 +121,10 @@ export function playOne(seed: string, players: number, size: MapSize, level: Cpu
     // 手番の直前と直後のAPは解決の中で変わるので、行動の出来事から使った分を数える
     for (const step of steps) {
       for (const event of step.events) {
+        if (['bountyPosted', 'driftFound', 'escaped', 'survivorHeld', 'bountyClaimed', 'shipCalled', 'raftWorked'].includes(event.type)) {
+          report.happenings[event.type] = (report.happenings[event.type] ?? 0) + 1;
+        }
+        if (event.type === 'crafted' && event.recipe === 'campfire') report.happenings.campfire = (report.happenings.campfire ?? 0) + 1;
         if (event.type === 'statusDamage') lastHurt.set(event.playerId, event.thirst > 0 ? 'thirst' : event.hunger > 0 ? 'hunger' : event.bleed > 0 ? 'bleed' : 'poison');
         if (event.type === 'weatherHit' && event.damage > 0) lastHurt.set(event.playerId, next.finalPhase ? 'finalStorm' : 'storm');
         if (event.type === 'npcHit') lastHurt.set(event.playerId, 'animal');
@@ -229,6 +236,7 @@ export function formatReport(report: SimReport): string {
   const deaths = report.deathsByAttack + report.deathsOther;
   lines.push(`脱落: 攻撃 ${pct(report.deathsByAttack, deaths)} / それ以外 ${pct(report.deathsOther, deaths)}　1ゲームの攻撃予約 ${(report.attacks / g).toFixed(1)}回　初攻撃 ターン${(report.firstAttackTurnSum / Math.max(1, report.firstAttackGames)).toFixed(1)}`);
   lines.push(`攻撃以外の脱落の内訳: ${Object.entries(report.deathCauses).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  lines.push(`1ゲームあたり: ${Object.entries(report.happenings ?? {}).map(([k, v]) => `${k} ${(v / g).toFixed(2)}`).join(', ')}`);
   lines.push(`生存に使ったAP: ${pct(report.survivalAp, report.spentAp)}`);
   const jobs = Object.keys(report.jobGames) as JobId[];
   lines.push(`職業の勝率: ${jobs.sort().map((job) => `${job} ${pct(report.jobWins[job] ?? 0, report.jobGames[job] ?? 0).trim()}`).join(', ')}`);

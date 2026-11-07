@@ -209,6 +209,28 @@ export function describeEvent(event: GameEvent, nameOf: (id: number) => string, 
       return event.winnerId === null ? '誰も生き残らなかった' : `${nameOf(event.winnerId)} の勝ち！`;
     case 'turnStarted':
       return `―― ${event.day}日目の${event.phase === 'day' ? '昼' : '夜'} ――`;
+    case 'bountyPosted':
+      return '賞金首！ 勝利目前の人がこのあたりにいる（地図に印）';
+    case 'allianceFormed':
+      return `${nameOf(event.a)}と${nameOf(event.b)}が同盟を結んだ`;
+    case 'allianceBroken':
+      return `裏切り！ ${nameOf(event.betrayerId)}が同盟相手の${nameOf(event.victimId)}を攻撃した`;
+    case 'traded': {
+      const got = event.got ? stacksText([event.got]) : 'なし';
+      const gave = event.gave ? stacksText([event.gave]) : 'なし';
+      if (event.betrayed && !event.got) return `${nameOf(event.withId)}に裏切られた！ 何も受け取れなかった（渡した物：${gave}）`;
+      return `${nameOf(event.withId)}と取引した（受け取った物：${got}、渡した物：${gave}）`;
+    }
+    case 'betrayalSensed':
+      return `裏切りの勘：${nameOf(event.fromId)}があなたを攻撃しようとしている！`;
+    case 'driftFound':
+      return `足元に${ITEMS[event.item].name}が流れ着いていた`;
+    case 'escaped':
+      return '逃げ足で1マス離れた';
+    case 'survivorHeld':
+      return 'サバイバー：飢えと渇きをこらえた（次のターンからHPが減る）';
+    case 'bountyClaimed':
+      return `賞金稼ぎ：${stacksText(event.items) || '何も'}を手に入れた`;
     case 'weatherChanged':
       return `今日の天気は${WEATHER_NAMES[event.weather]}`;
     case 'supplyDropped':
@@ -286,6 +308,7 @@ export function describePlanAction(action: PlanAction, terrain: TerrainId | null
   if (action.type === 'falseAlarm') return '偽の知らせを出す';
   if (action.type === 'discard') return `${ITEMS[action.item].name}を捨てる`;
   if (action.type === 'hunt') return '動物を狩る';
+  if (action.type === 'withhold') return '取引の約束を破って渡さない';
   if (action.type === 'aid') return '漂流者を手当てする';
   if (action.type === 'haunt') return `怪異：${HAUNT_NAMES[action.kind]}`;
   if (action.type === 'curse') return '祟りをかける';

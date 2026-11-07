@@ -11,6 +11,7 @@ import {
   GATHER_AP,
   GUARD_AP,
   HEAL_AP,
+  HEAL_RANGE,
   HIDE_AP,
   HUNT_AP,
   isProtected,
@@ -24,6 +25,7 @@ import {
   RARITY_NAMES,
   recipeAp,
   RECIPES,
+  STACK_SIZE,
   TRAITS,
   type DraftView,
   type JobId,
@@ -74,13 +76,14 @@ import { describeEvent, describePlanAction, HAUNT_NAMES, HAUNT_NOTES, VICTORY_TE
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const STRUCTURE_NAMES = { hut: '小屋', trap: '自分の罠', fort: '砦', smoke: '狼煙', raft: 'いかだ' } as const;
+const STRUCTURE_NAMES = { hut: '小屋', trap: '自分の罠', fort: '砦', smoke: '狼煙', raft: 'いかだ', campfire: '焚き火' } as const;
 const STRUCTURE_NOTES = {
   hut: '小屋がある（休息の回復が倍）',
   trap: '自分の置いた罠がある',
   fort: '砦がある（中にいると防御+2）',
   smoke: '狼煙が上がっている',
   raft: 'いかだがある',
+  campfire: '焚き火がある（ここで食べると回復+1、夜は周りが明るい）',
 } as const;
 
 const MARK_NOTES = {
@@ -89,6 +92,8 @@ const MARK_NOTES = {
   shipComing: '救助船がここへ向かっている',
   sink: 'このマスは次に沈む！',
   supply: '支援物資が落ちている。採取で拾える',
+  bounty: '賞金首！ 勝利目前の人がこの周り3×3のどこかにいる',
+  campfire: '焚き火の煙が見える',
 } as const;
 
 const KEY_DIRECTION: Record<string, Direction> = {
@@ -224,6 +229,18 @@ function eventSound(event: GameEvent, current: PlayerView): [SeId, number] | nul
       return ['warn', 0];
     case 'traitRevealed':
       return ['trait', 0];
+    case 'allianceBroken':
+    case 'betrayalSensed':
+      return ['warn', 0];
+    case 'allianceFormed':
+    case 'traded':
+    case 'driftFound':
+      return ['progress', 0];
+    case 'escaped':
+      return ['step', 0];
+    case 'bountyPosted':
+    case 'bountyClaimed':
+      return ['nearVictory', 0];
     case 'nearVictory':
       sound.drums = true;
       return ['nearVictory', 0];
@@ -830,7 +847,7 @@ function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellVie
   );
   const myJob = current.roster.find((p) => p.id === current.me.id)?.job;
   const here = projectPlan(current, plan);
-  const canHeal = (myJob === 'doctor' || current.secret.extraJob === 'doctor') && here.x === cell.x && here.y === cell.y;
+  const canHeal = (myJob === 'doctor' || current.secret.extraJob === 'doctor') && Math.max(Math.abs(here.x - cell.x), Math.abs(here.y - cell.y)) <= HEAL_RANGE;
   if (cell.figures.some((f) => f.kind === 'shadow')) targets.push({ label: '人影' });
   const owned = projectPlan(current, plan).owned;
   const canThrow = current.phase === 'day' && (owned[THROW_ITEM] ?? 0) > 0;
@@ -962,6 +979,7 @@ function renderCell(button: HTMLButtonElement, cell: CellView, current: PlayerVi
   if (onPath) classes.push('path');
   if (editing && !isProtected(current) && cell.figures.some((f) => f.kind !== 'self')) classes.push('can-attack');
   if (isGhost(current) && plan.some((a) => a.type === 'haunt' && a.x === cell.x && a.y === cell.y)) classes.push('ghost-target');
+  if (current.marks.some((m) => m.kind === 'bounty' && Math.abs(m.x - cell.x) <= 1 && Math.abs(m.y - cell.y) <= 1)) classes.push('bounty-zone');
   if (inspected?.x === cell.x && inspected.y === cell.y) classes.push('inspected');
   button.className = classes.join(' ');
 
@@ -1055,6 +1073,115 @@ function renderInfo(current: PlayerView) {
   appendCellActions(info, current, cell);
 }
 
+const tradeDrafts = new Map<number, { give: ItemId | ''; giveCount: number; take: ItemId; takeCount: number }>();
+
+const smallButton = (label: string, onClick: () => void, className = 'btn btn-small') => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener('click', onClick);
+  return button;
+};
+
+const countSelect = (max: number, value: number, onChange: (n: number) => void) => {
+  const select = document.createElement('select');
+  select.className = 'count';
+  for (let n = 1; n <= Math.max(1, max); n++) select.append(new Option(`×${n}`, String(n), false, n === value));
+  select.addEventListener('change', () => onChange(Number(select.value)));
+  return select;
+};
+
+/** 6.2 取引と同盟。どちらも密談の相手とだけ */
+function dealBox(current: PlayerView, whisper: PlayerView['whispers'][number]): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'deal';
+  const trade = whisper.trade;
+  if (trade) {
+    const line = document.createElement('p');
+    line.className = 'deal-row';
+    const status = { proposed: '返事待ち', agreed: '合意（解決で交換）', refused: '断られた', done: '済み' }[trade.status];
+    line.textContent = `取引：${ITEMS[trade.give.item].name}×${trade.give.count}を渡し、${ITEMS[trade.take.item].name}×${trade.take.count}をもらう【${status}】`;
+    box.append(line);
+    if (trade.status === 'proposed' && !trade.mine) {
+      const row = document.createElement('div');
+      row.className = 'whisper-buttons';
+      row.append(
+        smallButton('取引に応じる', () => net.send({ t: 'tradeRespond', tradeId: trade.id, accept: true }), 'btn btn-small btn-primary'),
+        smallButton('断る', () => net.send({ t: 'tradeRespond', tradeId: trade.id, accept: false })),
+      );
+      box.append(row);
+    }
+    if (trade.status === 'agreed' && canEdit()) {
+      const betraying = plan.some((a) => a.type === 'withhold' && a.tradeId === trade.id);
+      box.append(
+        smallButton(betraying ? '約束どおり渡すことにする' : '約束を破って渡さない（裏切る）', () => {
+          if (betraying) {
+            plan = plan.filter((a) => !(a.type === 'withhold' && a.tradeId === trade.id));
+            sendPlan();
+            render(false);
+          } else tryAdd({ type: 'withhold', tradeId: trade.id });
+        }, betraying ? 'btn btn-small' : 'btn btn-small btn-danger'),
+      );
+    }
+  } else if (whisper.withId !== null) {
+    const draft = tradeDrafts.get(whisper.id) ?? { give: current.me.inventory[0]?.item ?? '', giveCount: 1, take: 'fruit' as ItemId, takeCount: 1 };
+    tradeDrafts.set(whisper.id, draft);
+    const giveRow = document.createElement('div');
+    giveRow.className = 'deal-row';
+    const giveSelect = document.createElement('select');
+    giveSelect.setAttribute('aria-label', '渡す物');
+    for (const stack of current.me.inventory) giveSelect.append(new Option(ITEMS[stack.item].name, stack.item, false, stack.item === draft.give));
+    giveSelect.addEventListener('change', () => {
+      draft.give = giveSelect.value as ItemId;
+      draft.giveCount = 1;
+      renderWhispers(current);
+    });
+    const owned = current.me.inventory.find((s) => s.item === draft.give)?.count ?? 1;
+    giveRow.append('渡す', giveSelect, countSelect(owned, draft.giveCount, (n) => (draft.giveCount = n)));
+    const takeRow = document.createElement('div');
+    takeRow.className = 'deal-row';
+    const takeSelect = document.createElement('select');
+    takeSelect.setAttribute('aria-label', 'もらう物');
+    for (const id of Object.keys(ITEMS) as ItemId[]) {
+      if (id !== 'full_course' && id !== 'island_lord') takeSelect.append(new Option(ITEMS[id].name, id, false, id === draft.take));
+    }
+    takeSelect.addEventListener('change', () => (draft.take = takeSelect.value as ItemId));
+    takeRow.append('もらう', takeSelect, countSelect(STACK_SIZE, draft.takeCount, (n) => (draft.takeCount = n)));
+    const propose = smallButton('この取引を持ちかける', () => {
+      if (!draft.give) return;
+      net.send({ t: 'tradePropose', id: whisper.id, give: { item: draft.give, count: draft.giveCount }, take: { item: draft.take, count: draft.takeCount } });
+    });
+    propose.disabled = current.me.inventory.length === 0;
+    box.append(giveRow, takeRow, propose);
+  }
+  // 同盟
+  const allied = (id: number) => current.alliances.some((a) => a.a === id || a.b === id);
+  if (whisper.alliance === 'offeredToMe') {
+    const row = document.createElement('div');
+    row.className = 'whisper-buttons';
+    row.append(
+      smallButton('同盟に応じる', () => net.send({ t: 'allianceRespond', id: whisper.id, accept: true }), 'btn btn-small btn-primary'),
+      smallButton('断る', () => net.send({ t: 'allianceRespond', id: whisper.id, accept: false })),
+    );
+    box.append(row);
+  } else if (whisper.alliance === 'refused') {
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = '同盟の話はまとまらなかった';
+    box.append(note);
+  } else if (whisper.alliance === 'offeredByMe') {
+    const wait = document.createElement('p');
+    wait.className = 'muted';
+    wait.textContent = '同盟の返事を待っています…';
+    box.append(wait);
+  } else if (whisper.withId !== null && !allied(current.me.id) && !allied(whisper.withId)) {
+    const offer = smallButton('同盟を申し込む（全員に公開。互いの居場所が見える）', () => net.send({ t: 'alliancePropose', id: whisper.id }));
+    box.append(offer);
+  }
+  return box;
+}
+
 function renderWhispers(current: PlayerView) {
   const hasAny = current.whispers.length > 0 || current.whisperSeen.length > 0;
   $('whisper-card').hidden = !hasAny;
@@ -1103,6 +1230,7 @@ function renderWhispers(current: PlayerView) {
         line.textContent = message.text;
         box.append(line);
       }
+      if (planning) box.append(dealBox(current, whisper));
       const sent = whisper.messages.filter((m) => m.mine).length;
       const left = WHISPER.maxMessagesEach - sent;
       if (left <= 0 || !planning) {
@@ -1378,6 +1506,13 @@ function renderOrder() {
       } else if (entry?.ready && planning) {
         state.className = 'tag tag-ready';
         state.textContent = '確定';
+      }
+      const pact = current.alliances.find((a) => a.a === playerId || a.b === playerId);
+      if (pact) {
+        const ally = document.createElement('span');
+        ally.className = 'tag tag-ally';
+        ally.textContent = `同盟:${nameOf(pact.a === playerId ? pact.b : pact.a)}`;
+        name.append(' ', ally);
       }
       row.append(portrait, name, score, state);
       return row;

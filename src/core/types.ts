@@ -115,7 +115,16 @@ export type TraitId =
   | 'beast_friend'
   | 'false_alarm'
   | 'tenacity'
-  | 'other_face';
+  | 'other_face'
+  // テストプレイから追加した特性
+  | 'sentinel'
+  | 'quick_escape'
+  | 'archer'
+  | 'fire_maker'
+  | 'survivor'
+  | 'betrayal_sense'
+  | 'bounty_hunter'
+  | 'castaway_wisdom';
 
 export type Rarity = 'common' | 'rare' | 'super' | 'legend';
 
@@ -159,9 +168,10 @@ export type RecipeId =
   | 'sail'
   | 'fishing_rod'
   | 'trap'
-  | 'hut';
+  | 'hut'
+  | 'campfire';
 
-export type StructureKind = 'hut' | 'trap' | 'fort' | 'smoke' | 'raft';
+export type StructureKind = 'hut' | 'trap' | 'fort' | 'smoke' | 'raft' | 'campfire';
 
 export interface Structure {
   kind: StructureKind;
@@ -172,6 +182,8 @@ export interface Structure {
   builtTurn?: number;
   /** いかだに運び込んだ素材 */
   stock?: ItemStack[];
+  /** 焚き火が消えるターン */
+  expiresTurn?: number;
 }
 
 /** 7.4 救助船 */
@@ -210,6 +222,31 @@ export interface Whisper {
   to: number;
   status: 'pending' | 'open' | 'refused';
   messages: { from: number; text: string }[];
+  /** 6.2 この密談で持ちかけた取引 */
+  tradeId?: number;
+  /** 同盟の申し込み。申し込んだ人 */
+  allianceFrom?: number;
+  /** 同盟を断られた（この密談ではもう申し込めない） */
+  allianceRefused?: boolean;
+}
+
+/** 6.2 取引。合意すると、解決で行動順が先の人の手番に同時に交換する */
+export interface Trade {
+  id: number;
+  /** 持ちかけた人と、その人が渡す物 */
+  from: number;
+  give: ItemStack;
+  /** 相手と、相手が渡す物 */
+  to: number;
+  take: ItemStack;
+  status: 'proposed' | 'agreed' | 'refused' | 'done';
+}
+
+/** 賞金首。勝利目前の人がいるあたり（3×3）を全員に知らせる */
+export interface Bounty {
+  x: number;
+  y: number;
+  untilTurn: number;
 }
 
 export type MapSize = 'small' | 'medium' | 'large';
@@ -283,6 +320,10 @@ export interface PlayerState {
   secretRevealed: boolean;
   /** 一度きりの特性を使ったか */
   secretUsed: boolean;
+  /** 逃げ足を使った日 */
+  escapeDay: number;
+  /** サバイバー：飢えか渇きの最初のターンを耐えた */
+  survivorHeld: boolean;
   progress: Progress;
   /** 健脚を使ったターン */
   freeMoveTurn: number;
@@ -373,6 +414,13 @@ export interface GameState {
   whisperIntents: { from: number; to: number }[];
   /** 今の計画フェーズで使える密談 */
   whispers: Whisper[];
+  /** 6.2 合意した取引は解決まで持ち越す */
+  trades: Trade[];
+  nextTradeId: number;
+  /** 同盟（2人ずつ） */
+  alliances: { a: number; b: number }[];
+  bounties: Bounty[];
+  mapSize: MapSize;
   players: PlayerState[];
 }
 
@@ -398,6 +446,8 @@ export type PlanAction =
   /** 医師の治療。相手の指定は攻撃と同じ */
   | { type: 'heal'; x: number; y: number; who?: number }
   | { type: 'explore' }
+  /** 6.2 合意した取引で、自分の分を渡さない（裏切る） */
+  | { type: 'withhold'; tradeId: number }
   /** 今いるマスの砦を直す */
   | { type: 'repair' }
   /** 今いるマスの砦やいかだを壊す */
@@ -450,6 +500,7 @@ export type Action =
   | { type: 'ambush'; playerId: number }
   | { type: 'letter'; playerId: number; text: string }
   | { type: 'whisper'; playerId: number; targetId: number }
+  | { type: 'withhold'; playerId: number; tradeId: number }
   | { type: 'endTurn' };
 
 export type BlockReason =
@@ -546,6 +597,10 @@ export type GameEvent =
   | { type: 'playerRevived'; playerId: number }
   | { type: 'victory'; playerId: number; reason: VictoryReason }
   | { type: 'weatherChanged'; weather: Weather }
+  /** 勝利目前の人がいるあたり */
+  | { type: 'bountyPosted'; x: number; y: number }
+  | { type: 'allianceFormed'; a: number; b: number }
+  | { type: 'allianceBroken'; betrayerId: number; victimId: number }
   | { type: 'supplyDropped'; x: number; y: number }
   | { type: 'quake' }
   | { type: 'herdAppeared' }
@@ -557,6 +612,15 @@ export type GameEvent =
   | { type: 'finalSunk'; cells: number }
   /** ここから下は本人にだけ */
   | { type: 'weatherHit'; playerId: number; damage: number; water: number }
+  /** 6.2 取引の結果。受け取った物と、相手が渡さなかったか */
+  | { type: 'traded'; playerId: number; withId: number; got: ItemStack | null; gave: ItemStack | null; betrayed: boolean }
+  /** 裏切りの勘 */
+  | { type: 'betrayalSensed'; playerId: number; fromId: number }
+  /** 最下位の救済。浜に流れ着いた物 */
+  | { type: 'driftFound'; playerId: number; item: ItemId }
+  | { type: 'escaped'; playerId: number }
+  | { type: 'survivorHeld'; playerId: number }
+  | { type: 'bountyClaimed'; playerId: number; items: ItemStack[] }
   | { type: 'npcHit'; playerId: number; kind: NpcKind; damage: number }
   | { type: 'monkeyStole'; playerId: number; item: ItemId }
   | { type: 'hunted'; playerId: number; kind: NpcKind; killed: boolean; hit: boolean; gained: ItemStack[]; lost: ItemStack[] }

@@ -18,6 +18,11 @@ import {
   hashSeed,
   JOB_IDS,
   planForCpu,
+  proposeAlliance,
+  proposeTrade,
+  respondAlliance,
+  respondTrade,
+  senseBetrayal,
   Rng,
   useMindRead,
   type CpuLevel,
@@ -35,6 +40,7 @@ import {
   resolveTurn,
   respondWhisper,
   sendWhisper,
+  type GameEvent,
   type GameState,
   type MapSize,
   type PlanAction,
@@ -123,6 +129,8 @@ function cleanPlan(value: unknown): PlanAction[] | null {
       plan.push({ type: raw.type });
     } else if (raw?.type === 'curse') {
       plan.push({ type: 'curse' });
+    } else if (raw?.type === 'withhold' && Number.isInteger(raw.tradeId)) {
+      plan.push({ type: 'withhold', tradeId: raw.tradeId as number });
     } else if ((raw?.type === 'hunt' || raw?.type === 'aid') && Number.isInteger(raw.npcId)) {
       plan.push({ type: raw.type, npcId: raw.npcId as number });
     } else if (
@@ -484,9 +492,76 @@ class Room {
     if (!projectPlan(getPlayerView(this.state!, seat), plan).ok) return 'badPlan';
     member.plan = plan;
     member.ready = ready === true;
+    this.noticeBetrayal(seat, plan);
     this.broadcastStatus();
     this.resolveIfEveryoneReady();
     return null;
+  }
+
+  /** 裏切りの勘：密談した相手が攻撃を予約したら、本人にだけ知らせる */
+  private noticeBetrayal(seat: number, plan: PlanAction[]) {
+    const { state, notices } = senseBetrayal(this.state!, seat, plan);
+    this.state = state;
+    for (const notice of notices) this.members[notice.to]?.connection?.send({ t: 'announce', events: [notice.event] });
+  }
+
+  /** 6.2 取引と同盟。どちらも開いている密談の中でだけ */
+  deal(member: Member, message: Extract<ClientMessage, { t: 'tradePropose' | 'tradeRespond' | 'alliancePropose' | 'allianceRespond' }>) {
+    if (this.stage !== 'planning') return;
+    const seat = this.seatOf(member);
+    let next: GameState | null = null;
+    let events: GameEvent[] = [];
+    if (message.t === 'tradePropose' && Number.isInteger(message.id) && message.give && message.take) {
+      next = proposeTrade(this.state!, seat, message.id, { item: message.give.item, count: Number(message.give.count) }, { item: message.take.item, count: Number(message.take.count) });
+    } else if (message.t === 'tradeRespond' && Number.isInteger(message.tradeId)) {
+      next = respondTrade(this.state!, seat, message.tradeId, message.accept === true);
+    } else if (message.t === 'alliancePropose' && Number.isInteger(message.id)) {
+      next = proposeAlliance(this.state!, seat, message.id);
+    } else if (message.t === 'allianceRespond' && Number.isInteger(message.id)) {
+      const result = respondAlliance(this.state!, seat, message.id, message.accept === true);
+      next = result?.state ?? null;
+      events = result?.events ?? [];
+    }
+    if (!next) return;
+    this.state = next;
+    this.cpuDeals();
+    if (events.length > 0) {
+      // 同盟が成立すると見え方が変わるので、全員に計画画面を送り直す
+      for (const m of this.members) {
+        m.connection?.send({ t: 'announce', events });
+        if (m.connection) this.sendCurrent(m);
+      }
+      return;
+    }
+    this.members.forEach((m, index) => {
+      const view = getPlayerView(this.state!, index);
+      m.connection?.send({ t: 'whisperUpdate', whispers: view.whispers, whisperSeen: view.whisperSeen });
+    });
+  }
+
+  /** CPUは持っている物なら取引に応じる。同盟は半分の確率で受ける */
+  private cpuDeals() {
+    let state = this.state!;
+    const formed: GameEvent[] = [];
+    for (const trade of state.trades) {
+      const cpu = this.members[trade.to]?.cpu;
+      if (!cpu || trade.status !== 'proposed') continue;
+      const owns = state.players[trade.to].inventory.some((s) => s.item === trade.take.item && s.count >= trade.take.count);
+      state = respondTrade(state, trade.to, trade.id, owns) ?? state;
+    }
+    for (const whisper of state.whispers) {
+      if (whisper.allianceFrom === undefined) continue;
+      const other = whisper.allianceFrom === whisper.from ? whisper.to : whisper.from;
+      if (!this.members[other]?.cpu) continue;
+      const accept = hashSeed(`${this.seed}:ally:${whisper.id}:${state.turn}`) % 2 === 0;
+      const result = respondAlliance(state, other, whisper.id, accept);
+      if (result) {
+        state = result.state;
+        formed.push(...result.events);
+      }
+    }
+    this.state = state;
+    if (formed.length > 0) for (const m of this.members) m.connection?.send({ t: 'announce', events: formed });
   }
 
   /** 6.1 密談への返事とメッセージ。計画フェーズの間だけ受け付ける */
@@ -521,6 +596,12 @@ class Room {
       // 10.3 切断している人はCPUが代わりに動く
       if (!m.cpu && !m.connection && m.plan.length === 0 && this.useSubstitute) plans[seat] = this.planFor(seat, SUBSTITUTE_LEVEL);
       else plans[seat] = m.plan;
+      if (m.cpu === 'hard') {
+        for (const trade of previous.trades) {
+          if (trade.status !== 'agreed' || (trade.from !== seat && trade.to !== seat)) continue;
+          if (hashSeed(`${this.seed}:withhold:${trade.id}:${previous.turn}`) % 3 === 0) plans[seat] = [...plans[seat], { type: 'withhold', tradeId: trade.id }];
+        }
+      }
     });
     const { state, steps } = resolveTurn(previous, plans);
     this.state = state;
@@ -705,6 +786,12 @@ export class RoomManager {
         break;
       case 'whisperSend':
         room.whisper(member, message.id, { text: message.text });
+        break;
+      case 'tradePropose':
+      case 'tradeRespond':
+      case 'alliancePropose':
+      case 'allianceRespond':
+        room.deal(member, message);
         break;
       case 'backToLobby':
         error = room.backToLobby(member);

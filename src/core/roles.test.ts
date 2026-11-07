@@ -72,13 +72,13 @@ function playDraft(seed: string, seats: number): DraftState {
 }
 
 describe('データ', () => {
-  it('職業は6つ、特性は公開10種類と秘密13種類', () => {
+  it('職業は6つ、特性は公開14種類と秘密17種類', () => {
     expect(JOB_IDS).toHaveLength(6);
-    expect(PUBLIC_TRAITS).toHaveLength(10);
-    expect(SECRET_TRAITS).toHaveLength(13);
+    expect(PUBLIC_TRAITS).toHaveLength(14);
+    expect(SECRET_TRAITS).toHaveLength(17);
     const count = (pool: TraitId[], rarity: string) => pool.filter((id) => TRAITS[id].rarity === rarity).length;
-    expect([count(PUBLIC_TRAITS, 'common'), count(PUBLIC_TRAITS, 'rare'), count(PUBLIC_TRAITS, 'super'), count(PUBLIC_TRAITS, 'legend')]).toEqual([5, 3, 1, 1]);
-    expect([count(SECRET_TRAITS, 'common'), count(SECRET_TRAITS, 'rare'), count(SECRET_TRAITS, 'super'), count(SECRET_TRAITS, 'legend')]).toEqual([5, 4, 2, 2]);
+    expect([count(PUBLIC_TRAITS, 'common'), count(PUBLIC_TRAITS, 'rare'), count(PUBLIC_TRAITS, 'super'), count(PUBLIC_TRAITS, 'legend')]).toEqual([6, 5, 2, 1]);
+    expect([count(SECRET_TRAITS, 'common'), count(SECRET_TRAITS, 'rare'), count(SECRET_TRAITS, 'super'), count(SECRET_TRAITS, 'legend')]).toEqual([6, 6, 3, 2]);
   });
 
   it('機敏さは仕様どおり', () => {
@@ -455,7 +455,7 @@ describe('特殊勝利', () => {
     const win = arena();
     win.players[0].job = 'explorer';
     const land = win.map.terrain.flatMap((t, i) => (t === 'sea' ? [] : [i]));
-    win.players[0].progress.explored = land.slice(0, Math.ceil(land.length * GOALS.exploreRatio));
+    win.players[0].progress.explored = land.slice(0, Math.ceil(land.length * GOALS.exploreRatio[win.mapSize]));
     win.players[0].progress.specialsVisited = [1, 2, 3];
     expect(finishes(win)).toMatchObject({ finished: true, winnerId: 0, victoryReason: 'explorer' });
   });
@@ -578,19 +578,14 @@ describe('狼煙と救助船', () => {
     expect(applyAction(late, { type: 'craft', playerId: 0, recipe: 'smoke' }).events[0]).toMatchObject({ reason: 'notAllowed' });
   });
 
-  it('到着の1ターン前に全員へ公開し、最初に入った人が勝つ', () => {
+  it('到着するまで上げた人だけが場所を知り、着いたら全員に公開し、最初に入った人が勝つ', () => {
     let state = applyAction(mountain(), { type: 'craft', playerId: 0, recipe: 'smoke' }).state;
     const ship = state.ship!;
-    let soon = false;
     while (state.turn < ship.arrivesTurn && !state.finished) {
-      const result = resolveTurn(state, {});
-      state = result.state;
-      if (allEvents(result.steps).some((e) => e.type === 'shipSoon')) {
-        soon = true;
-        expect(getPlayerView(state, 1).marks.some((m) => m.kind === 'shipComing')).toBe(true);
-      }
+      expect(getPlayerView(state, 1).marks.some((m) => m.kind === 'shipComing' || m.kind === 'ship')).toBe(false);
+      state = resolveTurn(state, {}).state;
     }
-    expect(soon).toBe(true);
+    expect(getPlayerView(state, 1).marks.some((m) => m.kind === 'ship')).toBe(true);
     const walker = state.players[1];
     state.map.terrain[cellIndex(state, ship.x - 1, ship.y)] = 'grass';
     walker.x = ship.x - 1;

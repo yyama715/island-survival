@@ -27,6 +27,7 @@ const SEAT_COLORS = [
   ['#a052d8', '#7234a4'],
   ['#f08a2c', '#b85e14'],
   ['#1fb39c', '#127a6c'],
+  ['#e85a9c', '#b03a72'],
 ];
 
 const cache = new Map<string, string>();
@@ -534,6 +535,24 @@ export const npcUrl = (kind: NpcKind) => url(`npc:${kind}`, 16, 16, (p) => p.art
 // ―― 建物 ――
 
 const STRUCTURES: Record<StructureKind, { rows: Grid; palette: Palette }> = {
+  campfire: {
+    palette: { a: '#fff4b0', b: '#ffc62e', c: '#f08a2c', e: '#e0483e' },
+    rows: [
+      '.......k........',
+      '......kak.......',
+      '.....kabak......',
+      '.....kbbck..k...',
+      '....kbbccbk.kk..',
+      '...kbbcecbk.....',
+      '...kbceeecbk....',
+      '...kcceeeeck....',
+      '....kceeeck.....',
+      '..kkkkkkkkkkk...',
+      '.knnddnnddnnnk..',
+      '..kkdnnkkdnnk...',
+      '...kkkk..kkkk...',
+    ],
+  },
   hut: {
     palette: { a: '#e0c060', b: '#c09a3c' },
     rows: [
@@ -678,8 +697,25 @@ const SUPPLY: Grid = [
   '....kkkkkkkk....',
 ];
 
-export const markUrl = (kind: 'smoke' | 'ship' | 'shipComing' | 'sink' | 'supply') => {
+const BOUNTY: Grid = [
+  '....kkkkkkkk....',
+  '...kwwwwwwwwk...',
+  '...kwrwwwwrwk...',
+  '...kwwrwwrwwk...',
+  '...kwwwrrwwwk...',
+  '...kwwwrrwwwk...',
+  '...kwwrwwrwwk...',
+  '...kwrwwwwrwk...',
+  '...kwwwwwwwwk...',
+  '...kwyyyyyywk...',
+  '...kwwwwwwwwk...',
+  '....kkkkkkkk....',
+];
+
+export const markUrl = (kind: 'smoke' | 'ship' | 'shipComing' | 'sink' | 'supply' | 'bounty' | 'campfire') => {
   if (kind === 'smoke') return structureUrl('smoke');
+  if (kind === 'campfire') return structureUrl('campfire');
+  if (kind === 'bounty') return url('mark:bounty', 16, 16, (p) => p.art(BOUNTY, { w: '#f6dc8e' }, 0, 2));
   return url(`mark:${kind}`, 16, 16, (p) => {
     if (kind === 'sink') p.art(SINK, {}, 0, 2);
     if (kind === 'supply') p.art(SUPPLY, {}, 0, 1);

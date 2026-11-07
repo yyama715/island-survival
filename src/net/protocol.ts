@@ -4,6 +4,7 @@ import type {
   DraftView,
   GameEvent,
   GoalLine,
+  ItemStack,
   JobId,
   MapSize,
   PlanAction,
@@ -38,6 +39,12 @@ export type ClientMessage =
   | { t: 'mindRead'; targetId: number }
   | { t: 'whisperRespond'; id: number; accept: boolean }
   | { t: 'whisperSend'; id: number; text: string }
+  /** 6.2 密談の中で取引を持ちかける。give は自分が渡す物 */
+  | { t: 'tradePropose'; id: number; give: ItemStack; take: ItemStack }
+  | { t: 'tradeRespond'; tradeId: number; accept: boolean }
+  /** 密談の中で同盟を申し込む／応じる */
+  | { t: 'alliancePropose'; id: number }
+  | { t: 'allianceRespond'; id: number; accept: boolean }
   | { t: 'backToLobby' }
   | { t: 'leave' }
   /** 接続中はホスティング先にサーバーを眠らせないための合図。返事はない */

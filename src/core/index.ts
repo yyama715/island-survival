@@ -1,7 +1,24 @@
 export * from './types';
 export * from './data';
 export * from './roles';
-export { applyAction, cleanText, createGame, hasItem, isWeak, recipeAp, respondWhisper, resolveTurn, sendWhisper, useMindRead, visionRadius } from './game';
+export {
+  applyAction,
+  cleanText,
+  createGame,
+  hasItem,
+  isWeak,
+  proposeAlliance,
+  proposeTrade,
+  recipeAp,
+  respondAlliance,
+  respondTrade,
+  respondWhisper,
+  resolveTurn,
+  sendWhisper,
+  senseBetrayal,
+  useMindRead,
+  visionRadius,
+} from './game';
 export * from './draft';
 export { CPU_LEVEL_NAMES, ghostPlanForCpu, planForCpu, type CpuLevel } from './cpu';
 export { courseIngredients, describeProgress, exploreTarget, hasRole, isNearVictory, type GoalLine } from './victory';
