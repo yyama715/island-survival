@@ -48,12 +48,19 @@ const inputs = (id: RecipeId) =>
 
 const terrains: TerrainId[] = ['beach', 'grass', 'forest', 'rock', 'mountain', 'spring', 'river', 'cave', 'wreck', 'ruins'];
 const recipes: RecipeId[] = ['stone_knife', 'spear', 'bow', 'bandage', 'rope', 'fishing_rod', 'hut', 'campfire', 'smoke', 'sail'];
+/** 特性の使い方を短く。ボタンで使うもの、明かされるものも書く */
+const SHORT_USES = { always: 'ずっと', turn: '毎ターン', daily: '1日1回', once: '1回だけ', start: '開始時' } as const;
+const usageNote = (id: TraitId) => {
+  const def = TRAITS[id];
+  return [SHORT_USES[def.uses], def.action ? 'ボタン' : '', def.secret && def.reveals ? '公開' : ''].filter(Boolean).join('・');
+};
+
 const traitRows = (secret: boolean) =>
   (Object.keys(TRAITS) as TraitId[])
     .filter((id) => TRAITS[id].secret === secret)
     // レア度の低い順（コモン→レア→スーパーレア→伝説）
     .sort((x, y) => RARITY_ORDER.indexOf(TRAITS[x].rarity) - RARITY_ORDER.indexOf(TRAITS[y].rarity))
-    .map((id) => `<tr><th>${TRAITS[id].name}</th><td class="num">${RARITY_NAMES[TRAITS[id].rarity]}</td><td>${TRAITS[id].text}</td></tr>`)
+    .map((id) => `<tr><th>${TRAITS[id].name}</th><td class="num">${RARITY_NAMES[TRAITS[id].rarity]}<br><span class="use">${usageNote(id)}</span></td><td>${TRAITS[id].text}</td></tr>`)
     .join('');
 
 /** 自分を真ん中にした5×5のマス目。kind は相手がそのマスにいたときの届き方 */
@@ -227,8 +234,9 @@ const page3 = `
   </table>
 
   <h2 class="pixel">特性</h2>
-  <div class="cols">
+  <div class="cols traits">
     <div>
+      <p class="tiny">レア度の下は使い方：ずっと＝いつでも効く、1回だけ／1日1回＝回数に限りあり、ボタン＝自分で使う（ほかは自動）、公開＝効くと全員に明かされる</p>
       <h3>公開特性（全員に見える）</h3>
       <table>${traitRows(false)}</table>
     </div>
@@ -251,10 +259,6 @@ const page3 = `
     </ul>
   </div>
 
-  <h2 class="pixel">はじめて遊ぶ人へのコツ</h2>
-  <div class="box">
-    <p>① まずは水場（泉・川）の場所を覚える。② 序盤の2日間は攻撃されないので、採取と探索で準備する。③ 行動順が後の人は、先に動く人の動きを読んで予約する。④ 密談で手を組むのも、裏切るのも自由。⑤ 「誰かが勝利目前！」が出たら、全員で止めに行こう。</p>
-  </div>
   <p class="foot">3 / 3</p>
 </section>`;
 

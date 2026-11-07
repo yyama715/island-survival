@@ -26,6 +26,7 @@ import {
   recipeAp,
   RECIPES,
   STACK_SIZE,
+  TRAIT_USE_NAMES,
   TRAITS,
   type DraftView,
   type JobId,
@@ -584,13 +585,42 @@ function renderLobby(message: Extract<ServerMessage, { t: 'lobby' }>) {
 
 // ―― キャラ選択 ――
 
-function traitLine(label: string, id: TraitId): HTMLElement {
+/** 特性の使い方。回数、自動かボタンか、秘密特性なら明かされるか */
+function traitUsage(id: TraitId): string {
+  const def = TRAITS[id];
+  const parts = [TRAIT_USE_NAMES[def.uses], def.action ? `自分で使う：${def.action}` : '自動で効く'];
+  if (def.secret) parts.push(def.reveals ? '効くと全員に明かされる' : '明かされない');
+  return parts.join('／');
+}
+
+/** 今使えるかどうか。1回だけ・1日1回の特性にだけ出す */
+function traitState(id: TraitId, current: PlayerView | null): string {
+  if (!current) return '';
+  const def = TRAITS[id];
+  if (def.uses === 'once' && def.secret) return current.secret.used ? '使用済み' : 'まだ使える';
+  if (id === 'respected') return current.freeWhisperSpent ? '今日は使用済み' : '今日はまだ使える';
+  if (id === 'hawk_eye') return current.scoutSpent ? '今日は使用済み' : '今日はまだ使える';
+  return '';
+}
+
+function traitLine(label: string, id: TraitId, current: PlayerView | null = null): HTMLElement {
   const def = TRAITS[id];
   const line = document.createElement('p');
   line.className = 'trait-line';
   const name = document.createElement('b');
   name.textContent = `${label}：${def.name}（${RARITY_NAMES[def.rarity]}）`;
   line.append(name, document.createTextNode(` ${def.text}`));
+  const usage = document.createElement('span');
+  usage.className = 'trait-usage';
+  usage.textContent = traitUsage(id);
+  line.append(usage);
+  const state = traitState(id, current);
+  if (state) {
+    const tag = document.createElement('span');
+    tag.className = `tag ${state.includes('使用済み') ? 'tag-off' : 'tag-ready'}`;
+    tag.textContent = state;
+    line.append(' ', tag);
+  }
   return line;
 }
 
@@ -1309,8 +1339,8 @@ function renderRole(current: PlayerView) {
     row.append(label, value);
     lines.push(row);
   }
-  if (me.publicTrait) lines.push(traitLine('公開特性', me.publicTrait));
-  if (current.secret.trait) lines.push(traitLine('秘密特性', current.secret.trait));
+  if (me.publicTrait) lines.push(traitLine('公開特性', me.publicTrait, current));
+  if (current.secret.trait) lines.push(traitLine('秘密特性', current.secret.trait, current));
   // 読心術：今の予約を覗く
   if (current.secret.trait === 'mind_reader' && !current.secret.used && planning) {
     for (const other of current.roster) {

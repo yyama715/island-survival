@@ -94,3 +94,8 @@ td.num { white-space: nowrap; text-align: center; }
 .grid .diag, .key.diag { background: #f8d29a; border-color: #c9601c; }
 .grid .walk, .key.walk { background: repeating-linear-gradient(45deg, #fff 0 1mm, #f4a23a 1mm 1.6mm); border-color: #c9601c; }
 .grid .me, .key.me { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+.use { color: var(--accent); font-size: 6.8pt; white-space: nowrap; }
+
+.traits table { font-size: 7.1pt; }
+.traits th, .traits td { padding: 0.35mm 1mm; }

@@ -70,45 +70,60 @@ export const RARITY_ORDER: Rarity[] = ['common', 'rare', 'super', 'legend'];
 /** 4.3 特性の配布率 */
 export const RARITY_WEIGHTS: Record<Rarity, number> = { common: 50, rare: 30, super: 15, legend: 5 };
 
+/** 特性の使える回数。always はずっと効く */
+export type TraitUses = 'always' | 'turn' | 'daily' | 'once' | 'start';
+export const TRAIT_USE_NAMES: Record<TraitUses, string> = {
+  always: 'ずっと有効',
+  turn: '毎ターン1回',
+  daily: '1日1回',
+  once: '1回だけ',
+  start: 'ゲーム開始時',
+};
+
 export interface TraitDef {
   name: string;
   secret: boolean;
   rarity: Rarity;
   text: string;
+  uses: TraitUses;
+  /** 自分でボタンを押して使う（ない場合は条件がそろうと自動で効く） */
+  action?: string;
+  /** 秘密特性が効いたとき、全員に明かされる */
+  reveals?: boolean;
 }
 
 export const TRAITS: Record<TraitId, TraitDef> = {
-  swift_feet: { name: '健脚', secret: false, rarity: 'common', text: '草原・砂浜の移動が1ターンに1回AP消費なし' },
-  iron_stomach: { name: '鉄の胃袋', secret: false, rarity: 'common', text: '食中毒にならない' },
-  big_eater: { name: '大食い', secret: false, rarity: 'common', text: '満腹度の減りが1多い。代わりに最大HP+3、食べたときの回復+1' },
-  heat_proof: { name: '暑さに強い', secret: false, rarity: 'common', text: '晴れの日の追加の水分減少を受けない' },
-  swimmer: { name: '泳ぎ上手', secret: false, rarity: 'common', text: '潮位上昇で沈んだマスを渡れる' },
-  night_eyes: { name: '夜目', secret: false, rarity: 'rare', text: '夜でも昼と同じ視界' },
-  lucky: { name: '強運', secret: false, rarity: 'rare', text: '採取で「何もなし」が出たら引き直す' },
-  respected: { name: '人望', secret: false, rarity: 'rare', text: '1日に1回、APを使わずに密談できる' },
-  hawk_eye: { name: '鷹の目', secret: false, rarity: 'super', text: '1日に1回、好きなマスとその周りを1ターン見られる' },
-  sentinel: { name: '見張り番', secret: false, rarity: 'common', text: '夜でも隣のマスの人影が誰か分かる' },
-  quick_escape: { name: '逃げ足', secret: false, rarity: 'rare', text: '攻撃を受けて生き残ると、自動で1マス離れる（1日1回）' },
-  fire_maker: { name: '火起こし名人', secret: false, rarity: 'rare', text: '狼煙と焚き火の木材が1少なく、雨でも狼煙を上げられる' },
-  archer: { name: '弓の名手', secret: false, rarity: 'super', text: '弓の射程+1、命中率+10%' },
-  island_memory: { name: '島の記憶', secret: false, rarity: 'legend', text: 'ゲーム開始時に水源の位置がすべて分かる' },
-  play_dead: { name: '死んだふり', secret: true, rarity: 'common', text: 'HPが0になった時、一度だけHP1で耐え、他の人には脱落に見せる' },
-  hidden_purse: { name: '隠し財布', secret: true, rarity: 'common', text: '略奪されても1枠だけ奪われない' },
-  two_tongues: { name: '二枚舌', secret: true, rarity: 'common', text: '密談しても周りに表示されない' },
-  trap_master: { name: '罠の名人', secret: true, rarity: 'common', text: '自分の罠は警戒でも見つからず、ダメージ+1' },
-  early_riser: { name: '早起き', secret: true, rarity: 'common', text: '昼ターンだけ行動値+3' },
-  mind_reader: { name: '読心術', secret: true, rarity: 'rare', text: '1回だけ他人の予約を覗ける' },
-  lost_sense: { name: '方向音痴', secret: true, rarity: 'rare', text: '10%で移動方向がずれる。代わりに採取率+15%' },
-  pickpocket: { name: '盗み上手', secret: true, rarity: 'rare', text: '略奪で一番価値のある物を奪う' },
-  beast_friend: { name: '動物使い', secret: true, rarity: 'rare', text: '動物に襲われにくい' },
-  false_alarm: { name: '偽の知らせ', secret: true, rarity: 'super', text: '1回だけ「誰かが勝利目前」の偽の通知を出せる' },
-  tenacity: { name: '執念', secret: true, rarity: 'super', text: '脱落しても1回だけ、次の朝にランダムな砂浜でHP3で復活する' },
-  radio: { name: '救助の無線機', secret: true, rarity: 'legend', text: '山で修理すると、狼煙なしで救助を呼べる' },
-  castaway_wisdom: { name: '漂流者の知恵', secret: true, rarity: 'common', text: '砂浜の採取で布とロープ片が出やすい' },
-  survivor: { name: 'サバイバー', secret: true, rarity: 'rare', text: '満腹度か水分が0になっても、最初の1ターンはHPが減らない' },
-  betrayal_sense: { name: '裏切りの勘', secret: true, rarity: 'rare', text: '密談した相手が自分への攻撃を予約すると、1回だけ知らせが来る' },
-  bounty_hunter: { name: '賞金稼ぎ', secret: true, rarity: 'super', text: '勝利目前の人を倒すと、その人の持ち物をすべて受け取る' },
-  other_face: { name: 'もう一つの顔', secret: true, rarity: 'legend', text: '誰も選ばなかった職業の特殊勝利条件も秘密で持つ' },
+  swift_feet: { name: '健脚', secret: false, rarity: 'common', text: '草原・砂浜の移動が1ターンに1回AP消費なし', uses: 'turn' },
+  iron_stomach: { name: '鉄の胃袋', secret: false, rarity: 'common', text: '食中毒にならない', uses: 'always' },
+  big_eater: { name: '大食い', secret: false, rarity: 'common', text: '満腹度の減りが1多い。代わりに最大HP+3、食べたときの回復+1', uses: 'always' },
+  heat_proof: { name: '暑さに強い', secret: false, rarity: 'common', text: '晴れの日の追加の水分減少を受けない', uses: 'always' },
+  swimmer: { name: '泳ぎ上手', secret: false, rarity: 'common', text: '潮位上昇で沈んだマスを渡れる', uses: 'always' },
+  night_eyes: { name: '夜目', secret: false, rarity: 'rare', text: '夜でも昼と同じ視界', uses: 'always' },
+  lucky: { name: '強運', secret: false, rarity: 'rare', text: '採取で「何もなし」が出たら引き直す', uses: 'always' },
+  respected: { name: '人望', secret: false, rarity: 'rare', text: '1日に1回、APを使わずに密談できる', uses: 'daily' },
+  hawk_eye: { name: '鷹の目', secret: false, rarity: 'super', text: '1日に1回、好きなマスとその周りを1ターン見られる', uses: 'daily', action: 'マップのマスを選んで「周りを見る」' },
+  sentinel: { name: '見張り番', secret: false, rarity: 'common', text: '夜でも隣のマスの人影が誰か分かる', uses: 'always' },
+  quick_escape: { name: '逃げ足', secret: false, rarity: 'rare', text: '攻撃を受けて生き残ると、自動で1マス離れる（1日1回）', uses: 'daily' },
+  fire_maker: { name: '火起こし名人', secret: false, rarity: 'rare', text: '狼煙と焚き火の木材が1少なく、雨でも狼煙を上げられる', uses: 'always' },
+  archer: { name: '弓の名手', secret: false, rarity: 'super', text: '弓の射程+1、命中率+10%', uses: 'always' },
+  island_memory: { name: '島の記憶', secret: false, rarity: 'legend', text: 'ゲーム開始時に水源の位置がすべて分かる', uses: 'start' },
+  play_dead: { name: '死んだふり', secret: true, rarity: 'common', text: 'HPが0になった時、一度だけHP1で耐え、他の人には脱落に見せる', uses: 'once', reveals: true },
+  hidden_purse: { name: '隠し財布', secret: true, rarity: 'common', text: '略奪されても1枠だけ奪われない', uses: 'always', reveals: true },
+  two_tongues: { name: '二枚舌', secret: true, rarity: 'common', text: '密談しても周りに表示されない', uses: 'always' },
+  trap_master: { name: '罠の名人', secret: true, rarity: 'common', text: '自分の罠は警戒でも見つからず、ダメージ+1', uses: 'always', reveals: true },
+  early_riser: { name: '早起き', secret: true, rarity: 'common', text: '昼ターンだけ行動値+3', uses: 'always', reveals: true },
+  mind_reader: { name: '読心術', secret: true, rarity: 'rare', text: '1回だけ他人の予約を覗ける', uses: 'once', action: '「あなたの役割」の「予約を覗く」' },
+  lost_sense: { name: '方向音痴', secret: true, rarity: 'rare', text: '10%で移動方向がずれる。代わりに採取率+15%', uses: 'always', reveals: true },
+  pickpocket: { name: '盗み上手', secret: true, rarity: 'rare', text: '略奪で一番価値のある物を奪う', uses: 'always', reveals: true },
+  beast_friend: { name: '動物使い', secret: true, rarity: 'rare', text: '動物に襲われにくい', uses: 'always' },
+  false_alarm: { name: '偽の知らせ', secret: true, rarity: 'super', text: '1回だけ「誰かが勝利目前」の偽の通知を出せる', uses: 'once', action: '特別な行動の「偽の知らせ」' },
+  tenacity: { name: '執念', secret: true, rarity: 'super', text: '脱落しても1回だけ、次の朝にランダムな砂浜でHP3で復活する', uses: 'once', reveals: true },
+  radio: { name: '救助の無線機', secret: true, rarity: 'legend', text: '山で修理すると、狼煙なしで救助を呼べる', uses: 'once', action: '山で「無線機を直す」→「無線で救助を呼ぶ」' },
+  castaway_wisdom: { name: '漂流者の知恵', secret: true, rarity: 'common', text: '砂浜の採取で布とロープ片が出やすい', uses: 'always' },
+  survivor: { name: 'サバイバー', secret: true, rarity: 'rare', text: '満腹度か水分が0になっても、最初の1ターンはHPが減らない', uses: 'always' },
+  betrayal_sense: { name: '裏切りの勘', secret: true, rarity: 'rare', text: '密談した相手が自分への攻撃を予約すると、1回だけ知らせが来る', uses: 'once' },
+  bounty_hunter: { name: '賞金稼ぎ', secret: true, rarity: 'super', text: '勝利目前の人を倒すと、その人の持ち物をすべて受け取る', uses: 'always', reveals: true },
+  other_face: { name: 'もう一つの顔', secret: true, rarity: 'legend', text: '誰も選ばなかった職業の特殊勝利条件も秘密で持つ', uses: 'start' },
 };
 
 export const PUBLIC_TRAITS = (Object.keys(TRAITS) as TraitId[]).filter((id) => !TRAITS[id].secret);

@@ -521,3 +521,6 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
 .deal-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
 .deal-row select { min-height: 36px; padding: 2px 6px; font-size: 14px; }
 .deal-row select.count { width: 64px; }
+
+/* 特性の使い方（回数、自動か、明かされるか） */
+.trait-usage { display: block; color: var(--muted); font-size: 12px; }
