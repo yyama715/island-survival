@@ -1,9 +1,7 @@
 // テストプレイの提案から追加したルールと特性
 import { describe, expect, it } from 'vitest';
-import { CATCH_UP_CHANCE } from '../test-setup';
 import {
   applyAction,
-  CATCH_UP,
   createDraft,
   createGame,
   draftAuto,
@@ -291,23 +289,5 @@ describe('新しい特性', () => {
     expect(first.notices).toEqual([{ to: 1, event: { type: 'betrayalSensed', playerId: 1, fromId: 0 } }]);
     expect(senseBetrayal(first.state, 0, plan).notices).toEqual([]);
     expect(senseBetrayal(arena(), 0, plan).notices).toEqual([]);
-  });
-});
-
-describe('最下位の救済', () => {
-  it('朝、一番苦しい人の持ち物に何かが流れ着く', () => {
-    CATCH_UP.chance = 1;
-    try {
-      const state = arena(4);
-      state.turn = 6;
-      state.players[2].hp = 2;
-      state.players[2].inventory = [];
-      const r = applyAction(state, { type: 'endTurn' });
-      const found = r.events.find((e) => e.type === 'driftFound');
-      expect(found).toMatchObject({ playerId: 2 });
-      expect(CATCH_UP.items).toContain(r.state.players[2].inventory[0].item);
-    } finally {
-      CATCH_UP.chance = CATCH_UP_CHANCE;
-    }
   });
 });

@@ -223,8 +223,6 @@ export function describeEvent(event: GameEvent, nameOf: (id: number) => string, 
     }
     case 'betrayalSensed':
       return `裏切りの勘：${nameOf(event.fromId)}があなたを攻撃しようとしている！`;
-    case 'driftFound':
-      return `足元に${ITEMS[event.item].name}が流れ着いていた`;
     case 'escaped':
       return '逃げ足で1マス離れた';
     case 'survivorHeld':

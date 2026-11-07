@@ -663,7 +663,6 @@ export function replayFor(viewerId: number, previous: GameState, steps: readonly
         case 'whisperFailed':
         case 'traded':
         case 'betrayalSensed':
-        case 'driftFound':
         case 'escaped':
         case 'survivorHeld':
         case 'bountyClaimed':

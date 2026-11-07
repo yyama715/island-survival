@@ -234,7 +234,6 @@ function eventSound(event: GameEvent, current: PlayerView): [SeId, number] | nul
       return ['warn', 0];
     case 'allianceFormed':
     case 'traded':
-    case 'driftFound':
       return ['progress', 0];
     case 'escaped':
       return ['step', 0];

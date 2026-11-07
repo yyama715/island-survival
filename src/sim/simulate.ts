@@ -121,7 +121,7 @@ export function playOne(seed: string, players: number, size: MapSize, level: Cpu
     // 手番の直前と直後のAPは解決の中で変わるので、行動の出来事から使った分を数える
     for (const step of steps) {
       for (const event of step.events) {
-        if (['bountyPosted', 'driftFound', 'escaped', 'survivorHeld', 'bountyClaimed', 'shipCalled', 'raftWorked'].includes(event.type)) {
+        if (['bountyPosted', 'escaped', 'survivorHeld', 'bountyClaimed', 'shipCalled', 'raftWorked'].includes(event.type)) {
           report.happenings[event.type] = (report.happenings[event.type] ?? 0) + 1;
         }
         if (event.type === 'crafted' && event.recipe === 'campfire') report.happenings.campfire = (report.happenings.campfire ?? 0) + 1;

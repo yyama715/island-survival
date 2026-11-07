@@ -23,6 +23,7 @@ import {
   JOBS,
   LETTER_AP,
   RARITY_NAMES,
+  RARITY_ORDER,
   RECIPES,
   SMOKE,
   TERRAIN,
@@ -49,6 +50,8 @@ const recipes: RecipeId[] = ['stone_knife', 'stone_axe', 'spear', 'bow', 'bandag
 const traitRows = (secret: boolean) =>
   (Object.keys(TRAITS) as TraitId[])
     .filter((id) => TRAITS[id].secret === secret)
+    // レア度の低い順（コモン→レア→スーパーレア→伝説）
+    .sort((x, y) => RARITY_ORDER.indexOf(TRAITS[x].rarity) - RARITY_ORDER.indexOf(TRAITS[y].rarity))
     .map((id) => `<tr><th>${TRAITS[id].name}</th><td class="num">${RARITY_NAMES[TRAITS[id].rarity]}</td><td>${TRAITS[id].text}</td></tr>`)
     .join('');
 
@@ -116,7 +119,6 @@ const page1 = `
     </ul>
     <ul>
       <li><b>焚き火</b>（木材2）：そこで食べると回復+1、夜は周りが明るい。ただし煙は全員に見える。4ターンで消える</li>
-      <li><b>流れ着く物</b>：朝、一番苦しい人の足元に、食料や包帯などが流れ着くことがある</li>
       <li><b>医師の治療</b>は同じマスか隣のマスの相手に届く</li>
     </ul>
   </div>

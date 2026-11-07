@@ -616,8 +616,6 @@ export type GameEvent =
   | { type: 'traded'; playerId: number; withId: number; got: ItemStack | null; gave: ItemStack | null; betrayed: boolean }
   /** 裏切りの勘 */
   | { type: 'betrayalSensed'; playerId: number; fromId: number }
-  /** 最下位の救済。浜に流れ着いた物 */
-  | { type: 'driftFound'; playerId: number; item: ItemId }
   | { type: 'escaped'; playerId: number }
   | { type: 'survivorHeld'; playerId: number }
   | { type: 'bountyClaimed'; playerId: number; items: ItemStack[] }

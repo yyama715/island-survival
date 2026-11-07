@@ -1,7 +1,6 @@
 // 使い方: npm run sim -- --games 3000 --ap 4 --level hard --set GOALS.warPoints=6
 import {
   BALANCE,
-  CATCH_UP,
   COMBAT,
   DEPLETION,
   FATIGUE,
@@ -17,7 +16,7 @@ import {
 } from '../core/index';
 import { formatReport, simulate } from './simulate';
 
-const TABLES: Record<string, Record<string, unknown>> = { BALANCE, CATCH_UP, COMBAT, DEPLETION, FATIGUE, FINAL, GOALS, SMOKE, WEATHER };
+const TABLES: Record<string, Record<string, unknown>> = { BALANCE, COMBAT, DEPLETION, FATIGUE, FINAL, GOALS, SMOKE, WEATHER };
 
 const args = process.argv.slice(2);
 const option = (name: string) => {

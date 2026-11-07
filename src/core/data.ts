@@ -154,8 +154,6 @@ export const MAP_FRAGMENT_RADIUS = 2;
 
 // テストプレイから追加したルール
 export const CAMPFIRE = { turns: 4, food: 1, nightVision: 1 };
-/** 最下位の救済。朝、一番苦しい人の足元に物が流れ着く */
-export const CATCH_UP = { chance: 0.5, items: ['fruit', 'water', 'bandage', 'rope', 'shell'] as ItemId[] };
 export const ARCHER = { range: 1, hit: 0.1 };
 
 // 6.1 密談と手紙

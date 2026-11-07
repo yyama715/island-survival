@@ -32,7 +32,7 @@ export const JOBS: Record<JobId, JobDef> = {
     name: '医師',
     agility: 1,
     passive: '治療（AP1）で相手のHP+3と状態異常を解除。初めて治療した相手は最大HP+1。薬を作れる',
-    goal: '治療を合計3回（同じ相手は2回まで）行い、7日目の朝を生きて迎える',
+    goal: '治療を合計4回（同じ相手は2回まで）行い、7日目の朝を生きて迎える',
     items: [stack('bandage', 2), stack('antiseptic'), stack('medicine'), stack('canteen')],
   },
   soldier: {
@@ -142,7 +142,7 @@ export const ITEM_GENRE: Partial<Record<ItemId, FoodGenre>> = {
 // 4.5 特殊勝利の数値
 export const GOALS = {
   /** 釣果が累計この数で必ず島の主が出る */
-  lordCeiling: 10,
+  lordCeiling: 12,
   /** 主を奪われたあとは、この数の釣果で2匹目が出る */
   secondLordCeiling: 4,
   /** 天井に届く前に主が出る確率（初期案） */
@@ -152,7 +152,7 @@ export const GOALS = {
   fortHp: 10,
   fortRepair: 3,
   fortDefense: 2,
-  healsNeeded: 3,
+  healsNeeded: 4,
   healPerTarget: 2,
   /** 7日目の朝 */
   doctorSurviveTurn: 13,
