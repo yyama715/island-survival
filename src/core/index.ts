@@ -3,6 +3,7 @@ export * from './data';
 export * from './roles';
 export { applyAction, cleanText, createGame, hasItem, isWeak, recipeAp, respondWhisper, resolveTurn, sendWhisper, useMindRead, visionRadius } from './game';
 export * from './draft';
+export { CPU_LEVEL_NAMES, ghostPlanForCpu, planForCpu, type CpuLevel } from './cpu';
 export { courseIngredients, describeProgress, exploreTarget, hasRole, isNearVictory, type GoalLine } from './victory';
 export { checkFairness, generateMap } from './mapgen';
 export { hashSeed, Rng } from './rng';

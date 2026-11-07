@@ -122,6 +122,7 @@ export const ITEM_GENRE: Partial<Record<ItemId, FoodGenre>> = {
   dried_fish: 'fish',
   island_lord: 'fish',
   egg: 'meat',
+  meat: 'meat',
   fruit: 'fruit',
   nut: 'fruit',
   honey: 'fruit',

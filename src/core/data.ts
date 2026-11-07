@@ -74,6 +74,60 @@ export const HEAL_AP = 1;
 export const EXPLORE_AP = 1;
 export const REPAIR_AP = 1;
 
+export const SWIM_COST = 2;
+export const HUNT_AP = 1;
+export const AID_AP = 1;
+export const NEST_HIT_BONUS = 0.2;
+export const CURSE_HIT = -0.1;
+
+// 9章 天候とイベント（数値は初期案）
+export const WEATHER = {
+  weights: { sunny: 50, rain: 35, storm: 15 },
+  sunnyWater: 1,
+  rainWater: 2,
+  stormDamage: 2,
+  stormMoveCost: 1,
+  /** 1日あたり何かのイベントが起きる確率 */
+  eventChance: 0.4,
+  tideStartDay: 7,
+};
+export const SUPPLY_ITEMS: ItemStack[] = [
+  { item: 'medicine', count: 1 },
+  { item: 'rope', count: 2 },
+  { item: 'cloth', count: 3 },
+  { item: 'bandage', count: 2 },
+  { item: 'water', count: 3 },
+];
+export const CASTAWAY_REWARDS: ItemStack[] = [
+  { item: 'bandage', count: 2 },
+  { item: 'rope', count: 2 },
+  { item: 'cloth', count: 2 },
+  { item: 'medicine', count: 1 },
+];
+
+// 9.1 動物
+export const NPC_HP = { critter: 1, monkey: 2, boar: 8, herd: 3, castaway: 3 };
+export const NPC_MAX = { critter: 4, monkey: 2, boar: 1, herd: 1, castaway: 1 };
+export const NPC_MEAT = { critter: 1, monkey: 0, boar: 3, herd: 2, castaway: 0 };
+export const NPC_NAMES = { critter: '小動物', monkey: '猿', boar: '大イノシシ', herd: '動物の群れ', castaway: '漂流者' };
+export const BOAR = { hit: 0.6, damage: 2, friendHit: -0.3, territory: 2, fleeHp: 3, recoverTurns: 4, warPoints: 3 };
+export const HERD_DAMAGE = 1;
+export const FOOTPRINT_TURNS = 2;
+export const CRITTER_RESPAWN_TURNS = 6;
+export const FOLLOW_TURNS = 3;
+export const FOLLOWER_GATHER = 10;
+
+// 9.2 最終局面
+export const FINAL = {
+  /** 11日目の朝 */
+  startTurn: 21,
+  stormDamage: 1,
+  buildingDamage: 3,
+  attackBonus: 1,
+  gatherPenalty: 0.5,
+  hutHp: 6,
+};
+
 // 4章 職業と特性の数値（初期案を含む）
 export const SOLDIER = { hit: 0.1, damage: 1 };
 export const FISHER_FISH_MULTIPLIER = 2;
@@ -374,6 +428,7 @@ export const ITEMS: Record<ItemId, { name: string; use?: ItemUse }> = {
   medicinal_herb: { name: '薬草' },
   shell: { name: '貝', use: { hunger: 2, leaves: 'shell_husk', food: true } },
   island_lord: { name: '島の主' },
+  meat: { name: '肉', use: { hunger: 3, food: true, salted: true } },
   dried_fish: { name: '干し魚', use: { hunger: 3, food: true, salted: true } },
   nails: { name: '釘' },
   antiseptic: { name: '消毒液', use: { hp: 1, stopsBleeding: true, curesPoison: true } },

@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0b1620" />
-    <title>無人島サバイバル 試作</title>
+    <meta name="theme-color" content="#0a1020" />
+    <title>無人島サバイバル</title>
     <link rel="stylesheet" href="/src/ui/style.css" />
   </head>
   <body>
@@ -13,12 +13,17 @@
 
     <section id="screen-home" class="screen center" hidden>
       <div class="panel-narrow">
-        <h1>無人島サバイバル</h1>
-        <p class="muted">協力したいけど、信用しきれない。</p>
+        <div class="title-frame">
+          <h1 class="visually-hidden">無人島サバイバル</h1>
+          <img class="title-art" src="/src/ui/title.webp" alt="夜の無人島の浜辺で、松明を持つ人物。沖に船、遠くに狼煙" width="1024" height="576" />
+        </div>
+        <p class="tagline">この島から脱出できるのは1人だけ</p>
 
-        <label class="field">あなたの名前
-          <input id="name" maxlength="12" autocomplete="nickname" placeholder="12文字まで" />
-        </label>
+        <div class="card name-card">
+          <label class="field">あなたの名前
+            <input id="name" maxlength="12" autocomplete="nickname" placeholder="12文字まで" />
+          </label>
+        </div>
 
         <div class="card stack">
           <h2>友だちのルームに入る</h2>
@@ -52,6 +57,14 @@
               <option value="120">120秒</option>
             </select>
           </label>
+          <label class="field-row">空いた席のCPU
+            <select id="setup-cpu">
+              <option value="">入れない</option>
+              <option value="easy">やさしい</option>
+              <option value="normal">ふつう</option>
+              <option value="hard">つよい</option>
+            </select>
+          </label>
           <label class="field-row">シード値（任意）
             <input id="setup-seed" maxlength="32" autocomplete="off" spellcheck="false" placeholder="空ならランダム" />
           </label>
@@ -64,7 +77,7 @@
       <div class="panel-narrow">
         <h1>ルーム</h1>
         <div class="card stack">
-          <p class="muted">合言葉</p>
+          <h2>合言葉</h2>
           <p id="lobby-code" class="room-code"></p>
           <button id="copy-invite" class="btn" type="button">招待URLをコピー</button>
           <p id="invite-url" class="muted wrap"></p>
@@ -78,7 +91,7 @@
           <p id="lobby-rules" class="muted"></p>
         </div>
         <button id="start-game" class="btn btn-primary" type="button">ゲームを始める</button>
-        <p id="lobby-wait" class="muted center-text" hidden>ルームを作った人の開始を待っています…</p>
+        <p id="lobby-wait" class="tagline" hidden>ルームを作った人の開始を待っています…</p>
         <button id="leave-room" class="btn btn-quiet" type="button">ルームを出る</button>
       </div>
     </section>
@@ -98,14 +111,15 @@
     <section id="screen-result" class="screen center" hidden>
       <div class="panel-narrow center-text">
         <h1 id="result-title"></h1>
-        <p id="result-reason" class="hint"></p>
+        <img id="result-winner" class="result-winner" alt="" hidden />
+        <p id="result-reason" class="tagline"></p>
         <div id="result-players" class="card stack result-players"></div>
         <div class="card stack">
-          <p class="muted">この島のシード値</p>
+          <h2>この島のシード値</h2>
           <p id="result-seed" class="room-code small"></p>
         </div>
         <button id="back-to-lobby" class="btn btn-primary" type="button">ルームに戻る</button>
-        <p id="result-wait" class="muted" hidden>ルームを作った人の操作を待っています…</p>
+        <p id="result-wait" class="tagline" hidden>ルームを作った人の操作を待っています…</p>
         <button id="leave-result" class="btn btn-quiet" type="button">ルームを出る</button>
       </div>
     </section>
@@ -113,53 +127,62 @@
     <div id="screen-game" class="game" hidden>
       <header class="hud">
         <div class="hud-time">
-          <span id="phase-icon" aria-hidden="true"></span>
+          <img id="phase-icon" class="sprite" alt="" />
           <strong id="day-label"></strong>
           <span id="turn-label" class="muted"></span>
+          <img id="weather-icon" class="sprite" alt="" />
+          <span id="weather-label" class="muted"></span>
         </div>
         <div id="timer" class="timer" role="timer"></div>
         <div class="hud-stats">
-          <div class="stat">
-            <span class="stat-name">AP</span>
+          <div class="stat" title="行動力">
+            <img class="sprite" data-icon="ap" alt="AP" />
             <span id="ap-pips" class="pips"></span>
           </div>
-          <div class="stat">
-            <span class="stat-name">HP</span>
+          <div class="stat" title="体力">
+            <img class="sprite" data-icon="heart" alt="HP" />
             <strong id="hp-value"></strong>
           </div>
-          <div class="stat">
-            <span class="stat-name">満腹</span>
+          <div class="stat" title="満腹度">
+            <img class="sprite" data-icon="hunger" alt="満腹" />
             <strong id="hunger-value"></strong>
           </div>
-          <div class="stat">
-            <span class="stat-name">水分</span>
+          <div class="stat" title="水分">
+            <img class="sprite" data-icon="water" alt="水分" />
             <strong id="water-value"></strong>
           </div>
           <span id="status-tags" class="status-tags"></span>
         </div>
+        <div id="final-banner" class="final-banner" hidden>最終局面！ 島が沈んでいく。毎ターンHP−1</div>
       </header>
 
       <main class="board">
         <div id="map-scroll" class="map-scroll">
           <div id="map" class="map" role="grid" aria-label="島のマップ"></div>
         </div>
+        <div id="weather-layer" class="weather-layer"></div>
       </main>
 
       <aside class="side">
         <section class="actions">
-          <button id="gather" class="btn" type="button">採取（AP1）</button>
-          <button id="undo" class="btn" type="button">1つ戻す</button>
-          <button id="confirm" class="btn btn-primary" type="button">予約を確定</button>
+          <button id="gather" class="btn" type="button"><img class="sprite" data-icon="gather" alt="" /><span>採取</span></button>
+          <button id="undo" class="btn" type="button"><img class="sprite" data-icon="undo" alt="" /><span>1つ戻す</span></button>
+          <button id="confirm" class="btn btn-primary" type="button"><img class="sprite" data-icon="check" alt="" /><span id="confirm-label">予約を確定</span></button>
         </section>
 
         <section class="more-actions">
-          <button id="act-rest" class="btn btn-small" type="button">休息</button>
-          <button id="act-guard" class="btn btn-small" type="button">防御</button>
-          <button id="act-hide" class="btn btn-small" type="button">隠れる</button>
-          <button id="act-ambush" class="btn btn-small" type="button">待ち伏せ</button>
+          <button id="act-rest" class="btn btn-small" type="button"><img class="sprite" data-icon="rest" alt="" /><span>休息</span></button>
+          <button id="act-guard" class="btn btn-small" type="button"><img class="sprite" data-icon="guard" alt="" /><span>防御</span></button>
+          <button id="act-hide" class="btn btn-small" type="button"><img class="sprite" data-icon="hide" alt="" /><span>隠れる</span></button>
+          <button id="act-ambush" class="btn btn-small" type="button"><img class="sprite" data-icon="ambush" alt="" /><span>待ち伏せ</span></button>
         </section>
 
         <section id="special-actions" class="special-actions"></section>
+
+        <section id="ghost-card" class="card stack ghost-card" hidden>
+          <h2>幽霊になった…</h2>
+          <div id="ghost-body" class="stack"></div>
+        </section>
 
         <details class="card" id="role-card" open>
           <summary id="role-title">あなたの役割</summary>

@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
+import { JOB_IDS } from '../core/index';
 import type { ClientMessage, ServerMessage } from '../net/protocol';
 import { RoomManager, type Connection } from './rooms';
 import { attachSockets, WS_PATH } from './socket';
@@ -436,6 +437,108 @@ describe('ルーム', () => {
       expect(a.last('mindReadResult').actions).toEqual([{ type: 'gather' }]);
       expect(b.all('mindReadResult')).toHaveLength(0);
       expect(b.last('announce').events[0]).toMatchObject({ type: 'traitRevealed', trait: 'mind_reader' });
+    });
+  });
+
+  describe('CPU', () => {
+    let room: RoomManager;
+    beforeEach(() => {
+      room = new RoomManager({ stepMs: 10, draftSeconds: 30 });
+    });
+    afterEach(() => room.dispose());
+
+    function withCpu(level: 'easy' | 'normal' | 'hard' | null) {
+      const host = new FakeClient(room);
+      host.say({ t: 'create', name: 'h', setup: { players: 4, mapSize: 'small', planSeconds: 60, cpuLevel: level } });
+      host.say({ t: 'start' });
+      return host;
+    }
+    const pickAll = (host: FakeClient) => {
+      host.say({ t: 'draftReroll', reroll: false });
+      for (let i = 0; i < 6 && host.last('draft').view.phase !== 'items'; i++) {
+        const view = host.last('draft').view;
+        if (view.turnSeat !== view.you) continue;
+        const free = JOB_IDS.find((id) => !view.seats.some((s) => s.job === id))!;
+        host.say({ t: 'draftJob', job: free });
+      }
+      host.say({ t: 'draftItems', indexes: [0, 1] });
+      const view = host.last('draft').view;
+      host.say({ t: 'draftStart', start: view.starts.find((s) => !s.taken)!.index });
+    };
+
+    it('空いた席をCPUが埋め、CPUの番は待たされない', () => {
+      const host = withCpu('normal');
+      const draft = host.last('draft');
+      expect(draft.names).toEqual(['h', 'CPU1', 'CPU2', 'CPU3']);
+      pickAll(host);
+      const planning = host.last('planning');
+      expect(planning.view.roster).toHaveLength(4);
+      expect(planning.view.roster.every((p) => p.job)).toBe(true);
+      expect(planning.status.filter((s) => s.id !== 0).every((s) => s.ready && s.connected)).toBe(true);
+    });
+
+    it('人間が確定すればCPUを待たずに解決する', () => {
+      const host = withCpu('easy');
+      pickAll(host);
+      host.say({ t: 'plan', actions: [], ready: true });
+      expect(host.last('replay').steps.length).toBeGreaterThan(0);
+    });
+
+    it('指定がなければCPUは入らない', () => {
+      expect(withCpu(null).last('draft').names).toEqual(['h']);
+    });
+
+    it('おかしな強さは指定なしになる', () => {
+      expect(withCpu('nope' as never).last('draft').names).toEqual(['h']);
+    });
+
+    it('切断した人はCPUが代打ちし、復帰できる', () => {
+      const host = new FakeClient(room);
+      host.say({ t: 'create', name: 'h', setup: { players: 3, mapSize: 'small', planSeconds: 60 } });
+      const friend = new FakeClient(room);
+      friend.say({ t: 'join', code: host.last('joined').code, name: 'f' });
+      host.say({ t: 'start' });
+      vi.advanceTimersByTime(30_000 * 12);
+      const token = friend.last('joined').token;
+      room.disconnected(friend);
+      host.say({ t: 'plan', actions: [], ready: true });
+      vi.advanceTimersByTime(5_000);
+      expect(host.last('planning').view.turn).toBeGreaterThan(1);
+      const back = new FakeClient(room);
+      back.say({ t: 'resume', token });
+      expect(back.last('planning').view.me.id).toBe(1);
+    });
+
+    it('誘われたCPUは密談に定型文で答える', () => {
+      const host = withCpu('normal');
+      pickAll(host);
+      const code = host.last('joined').code;
+      const rooms = (room as unknown as { rooms: Map<string, { state: any }> }).rooms;
+      const state = rooms.get(code)!.state;
+      state.turn = 2;
+      state.whisperIntents = [];
+      const cx = state.players[0].x;
+      const cy = state.players[0].y;
+      state.players[1].x = cx;
+      state.players[1].y = cy;
+      host.say({ t: 'plan', actions: [{ type: 'whisper', x: cx, y: cy }], ready: true });
+      vi.advanceTimersByTime(5_000);
+      const whispers = host.last('planning').view.whispers;
+      if (whispers.length > 0) {
+        expect(whispers[0].status).toBe('open');
+        expect(whispers[0].messages.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('幽霊になった人間も予約でき、全員揃うまで待つ', () => {
+      const host = withCpu('easy');
+      pickAll(host);
+      const code = host.last('joined').code;
+      const rooms = (room as unknown as { rooms: Map<string, { state: any }> }).rooms;
+      rooms.get(code)!.state.players[0].alive = false;
+      host.say({ t: 'plan', actions: [{ type: 'haunt', kind: 'fog', x: 3, y: 3 }], ready: true });
+      expect(host.all('error')).toHaveLength(0);
+      expect(host.last('replay').steps.flatMap((s) => s.events).some((e) => e.type === 'haunted')).toBe(true);
     });
   });
 

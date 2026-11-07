@@ -1,6 +1,13 @@
 // ルール本体。applyAction は元の状態を変更せず、新しい状態と出来事を返す。
 import {
+  AID_AP,
   AMBUSH_AP,
+  CURSE_HIT,
+  FINAL,
+  FOLLOWER_GATHER,
+  HUNT_AP,
+  SWIM_COST,
+  WEATHER,
   BIG_EATER_HP,
   EARLY_RISER_BONUS,
   EXPLORE_AP,
@@ -69,6 +76,7 @@ import { generateMap } from './mapgen';
 import { hashSeed, Rng } from './rng';
 import { BACKPACK_SLOTS, GOALS, JOBS, RAFT, SMOKE, STEAL_PRIORITY } from './roles';
 import { courseIngredients, findWinner, hasRole, isNearVictory, newProgress } from './victory';
+import { aidNpc, drownCheck, haunt, huntNpc, moveNpcs, seedAnimals, startOfTurn } from './world';
 import type {
   JobId,
   PlayerSetup,
@@ -145,7 +153,22 @@ export function playerVision(state: GameState, player: PlayerState): number {
   if (hasRole(player, 'explorer')) radius += 1;
   if (phaseOf(state.turn) === 'day' && hasItem(player, 'binoculars')) radius += 1;
   if (player.exploreTurn === state.turn) radius += 1;
-  return radius;
+  if (state.world) {
+    // 9章 雨の日は視界−1。8.5 幽霊の濃霧の中も視界−1
+    if (state.weather === 'rain') radius -= 1;
+    const cell = cellIndex(state, player.x, player.y);
+    if (state.fog.some((f) => f.untilTurn >= state.turn && f.cells.includes(cell))) radius -= 1;
+  }
+  return Math.max(0, radius);
+}
+
+/** 移動コスト。嵐の日は+1。泳ぎ上手は沈んだマスを渡れる */
+export function moveCostOf(state: GameState, player: PlayerState, index: number): number | null {
+  const terrain = state.map.terrain[index];
+  let cost = TERRAIN[terrain].moveCost;
+  if (cost === null && player.publicTrait === 'swimmer' && state.sunk.includes(index)) cost = SWIM_COST;
+  if (cost === null) return null;
+  return state.world && state.weather === 'storm' ? cost + WEATHER.stormMoveCost : cost;
 }
 
 /** 特性や道具まで含めて、夜に誰なのかまで見えるか */
@@ -154,6 +177,8 @@ export const seesNames = (state: GameState, viewer: PlayerState, other: PlayerSt
 
 export function visibleCells(state: GameState, player: PlayerState): number[] {
   const { width, height, terrain } = state.map;
+  // 9.2 最終局面は霧がなくなる
+  if (state.finalPhase) return terrain.map((_, i) => i);
   const here = terrain[cellIndex(state, player.x, player.y)];
   const radius = playerVision(state, player);
   const seesOver = TERRAIN[here].seesOverBlocks;
@@ -204,6 +229,8 @@ export interface CreateGameOptions {
   names?: string[];
   /** キャラ選択の結果。なければ職業も特性もない */
   setups?: PlayerSetup[];
+  /** 天候・イベント・動物・最終局面を動かす */
+  world?: boolean;
 }
 
 /** 秘密特性が発動した瞬間に公開する */
@@ -292,6 +319,12 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     repairedTurn: 0,
     radioFixed: false,
     treatedOnce: false,
+    killerId: null,
+    hauntedOn: 0,
+    curseUsed: false,
+    cursedTurn: 0,
+    hpAtTurnStart: INITIAL_HP,
+    swamTurn: 0,
   }));
   const state: GameState = {
     seed,
@@ -304,6 +337,18 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     ship: null,
     scouts: [],
     nearNotified: [],
+    world: !!options.world,
+    weather: 'sunny',
+    npcs: [],
+    nextNpcId: 1,
+    footprints: [],
+    sinkNext: [],
+    sunk: [],
+    finalPhase: false,
+    fog: [],
+    blessed: [],
+    supply: null,
+    critterRespawns: [],
     map,
     depletion: new Array(cellCount).fill(0),
     looted: new Array(cellCount).fill(false),
@@ -319,6 +364,7 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     refreshMemory(state, player);
     markVisited(state, player);
   }
+  if (state.world) seedAnimals(state, rng);
   state.initiative = rollInitiative(players, rng);
   state.rngState = rng.state;
   return state;
@@ -354,7 +400,7 @@ function addItem(player: PlayerState, item: ItemId, count: number): number {
 const hasAny = (player: PlayerState, items: readonly ItemId[]) =>
   player.inventory.some((stack) => items.includes(stack.item));
 
-function receive(player: PlayerState, stacks: ItemStack[]) {
+export function receive(player: PlayerState, stacks: ItemStack[]) {
   const gained: ItemStack[] = [];
   const lost: ItemStack[] = [];
   for (const { item, count } of stacks) {
@@ -407,6 +453,11 @@ export function adjustedWeights(entries: GatherEntry[], depletion: number, phase
 function gatherFromTable(state: GameState, player: PlayerState, index: number, rng: Rng, events: GameEvent[]) {
   const terrain = state.map.terrain[index];
   const entries = TERRAIN[terrain].gather;
+  // 沈んだマス（海）には採れるものがない
+  if (entries.length === 0) {
+    events.push({ type: 'gatherNothing', playerId: player.id, terrain, missingTool: false });
+    return;
+  }
   const weights = adjustedWeights(entries, state.depletion[index], phaseOf(state.turn));
 
   // 4.2 漁師は砂浜で魚が出やすい
@@ -415,13 +466,29 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
       if (e.kind === 'item' && e.rolls.some((r) => r.item === 'fish')) weights[i] *= FISHER_FISH_MULTIPLIER;
     });
   }
-  // 4.3 方向音痴は採取率が上がる
-  if (player.secretTrait === 'lost_sense') {
+  // 4.3 方向音痴、9.1 漂流者の同行、8.5 幽霊の守護は採取率が上がる
+  const follower = state.npcs.some((n) => n.followerOf === player.id);
+  const blessed = state.blessed.some((b) => b.untilTurn >= state.turn && b.cells.includes(index));
+  const points =
+    (player.secretTrait === 'lost_sense' ? LOST_SENSE_GATHER : 0) +
+    (follower ? FOLLOWER_GATHER : 0) +
+    (blessed ? FOLLOWER_GATHER : 0);
+  if (points > 0) {
     const nothing = entries.findIndex((e) => e.kind === 'nothing');
-    const moved = Math.min(weights[nothing], LOST_SENSE_GATHER);
+    const moved = Math.min(weights[nothing], points);
     weights[nothing] -= moved;
     const first = entries.findIndex((e) => e.kind === 'item');
     weights[first] += moved;
+  }
+  // 9.2 最終局面では採取の成功率が半分になる
+  if (state.finalPhase) {
+    const nothing = entries.findIndex((e) => e.kind === 'nothing');
+    entries.forEach((_, i) => {
+      if (i === nothing) return;
+      const moved = weights[i] * FINAL.gatherPenalty;
+      weights[i] -= moved;
+      weights[nothing] += moved;
+    });
   }
 
   // 天井：「何もなし」が続いたら、次は必ず何か手に入る
@@ -524,9 +591,9 @@ function gatherSpecial(
 }
 
 /** 2.3 脱落。所持品はそのマスに遺品として残る */
-function eliminate(state: GameState, player: PlayerState, events: GameEvent[]) {
+export function eliminate(state: GameState, player: PlayerState, events: GameEvent[]) {
   // 4.3 死んだふり：HP1で耐える。他の人には脱落に見せる
-  if (player.secretTrait === 'play_dead' && !player.secretUsed) {
+  if (player.secretTrait === 'play_dead' && !player.secretUsed && !state.finalPhase) {
     player.secretUsed = true;
     player.hp = 1;
     player.playingDead = true;
@@ -537,8 +604,8 @@ function eliminate(state: GameState, player: PlayerState, events: GameEvent[]) {
   player.alive = false;
   player.bleeding = false;
   player.poisonTurns = 0;
-  // 4.3 執念：次の朝に復活する。所持品は遺品として残る
-  if (player.secretTrait === 'tenacity' && !player.secretUsed) {
+  // 4.3 執念：次の朝に復活する。所持品は遺品として残る。最終局面では発動しない
+  if (player.secretTrait === 'tenacity' && !player.secretUsed && !state.finalPhase) {
     player.secretUsed = true;
     player.reviving = true;
   }
@@ -556,6 +623,7 @@ function takeRelics(state: GameState, player: PlayerState, events: GameEvent[]) 
   const { gained, lost } = receive(player, relics);
   if (lost.length > 0) state.relics[index] = lost;
   else delete state.relics[index];
+  if (state.supply && state.supply.x === player.x && state.supply.y === player.y && gained.length > 0) state.supply = null;
   if (gained.length > 0) events.push({ type: 'relicTaken', playerId: player.id, items: gained });
 }
 
@@ -579,8 +647,8 @@ function inRange(ax: number, ay: number, bx: number, by: number, weapon: WeaponD
  * 追跡攻撃。使えるAPの中で一番安く相手に届く道を探す。
  * 今いる場所から届くなら空の道、どうしても届かなければ null を返す。
  */
-function chasePath(state: GameState, player: PlayerState, target: PlayerState, weapon: WeaponDef, budget: number) {
-  const { width, height, terrain } = state.map;
+function chasePath(state: GameState, player: PlayerState, target: { x: number; y: number }, weapon: WeaponDef, budget: number) {
+  const { width, height } = state.map;
   const start = cellIndex(state, player.x, player.y);
   const costs = new Map<number, number>([[start, 0]]);
   const cameFrom = new Map<number, number>();
@@ -604,7 +672,7 @@ function chasePath(state: GameState, player: PlayerState, target: PlayerState, w
       const ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
       const next = ny * width + nx;
-      const step = TERRAIN[terrain[next]].moveCost;
+      const step = moveCostOf(state, player, next);
       if (step === null || cost + step > budget) continue;
       if (cost + step < (costs.get(next) ?? Infinity)) {
         costs.set(next, cost + step);
@@ -695,6 +763,7 @@ function strike(
   const hitChance =
     weapon.hit +
     (soldier ? SOLDIER.hit : 0) +
+    (attacker.cursedTurn === state.turn ? CURSE_HIT : 0) +
     (night && !weapon.ranged ? COMBAT.nightMeleeHit : 0) +
     (diagonal ? COMBAT.diagonalHit : 0) +
     (guarding ? COMBAT.guardHit : 0) +
@@ -710,6 +779,7 @@ function strike(
       (weapon.rollsD3 ? rng.int(1, 3) : 0) +
       weapon.bonus +
       (soldier ? SOLDIER.damage : 0) +
+      (state.finalPhase ? FINAL.attackBonus : 0) +
       (diagonal ? COMBAT.diagonalDamage : 0) -
       (targetTerrain === 'rock' ? COMBAT.rockDefense : 0) -
       (inFort ? GOALS.fortDefense : 0);
@@ -755,6 +825,7 @@ function strike(
 
     if (target.hp === 0) {
       if (soldier) attacker.progress.warPoints += GOALS.warPerKill;
+      target.killerId = attacker.id;
       eliminate(state, target, events);
     } else if (distance === 0 && rng.next() < COMBAT.counterChance) {
       // 8.3 反撃。殴り返せるのは同じマスにいるときだけ
@@ -913,6 +984,7 @@ function fatigueChance(action: Action, apSpent: number): number {
     case 'gather':
       return FATIGUE.gather;
     case 'attack':
+    case 'hunt':
       return FATIGUE.attack;
     case 'craft':
       return RECIPES[action.recipe].builds ? FATIGUE.build : FATIGUE.craft;
@@ -926,7 +998,8 @@ export const recipeAp = (apCost: number, job: JobId | null) => (job === 'carpent
 
 /** 2.2 勝者が決まった */
 function declareWin(state: GameState, playerId: number, reason: VictoryReason, events: GameEvent[]) {
-  if (state.finished) return;
+  // 9.2 最終局面では最後の1人しか勝てない
+  if (state.finished || state.finalPhase) return;
   state.finished = true;
   state.winnerId = playerId;
   state.victoryReason = reason;
@@ -962,7 +1035,10 @@ function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: R
   const wrongPlace = recipe.onTerrain && state.map.terrain[index] !== recipe.onTerrain;
   const smokeBlocked =
     recipe.builds === 'smoke' &&
-    (state.ship !== null || state.turn < SMOKE.firstTurn || state.turn > SMOKE.lastTurn);
+    (state.ship !== null ||
+      state.turn < SMOKE.firstTurn ||
+      state.turn > SMOKE.lastTurn ||
+      (state.world && state.weather === 'rain'));
   if (wrongJob || wrongPlace || smokeBlocked) {
     events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
     return;
@@ -1160,6 +1236,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     // 2.4 開始フェーズ。満腹度と水分は昼ターンにだけ減る。0のときのダメージは毎ターン
     const isDay = phaseOf(state.turn) === 'day';
     state.scouts = state.scouts.filter((scout) => scout.untilTurn >= state.turn);
+    if (state.world) startOfTurn(state, rng, events);
     for (const player of state.players) {
       // 4.3 執念：次の朝にランダムな砂浜で復活する
       if (!player.alive && player.reviving && isDay) {
@@ -1234,8 +1311,14 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
 
   const player = state.players[action.playerId];
   const playerId = player.id;
+  // 8.5 幽霊にできること
   if (!player.alive) {
-    events.push({ type: 'blocked', playerId, reason: 'eliminated' });
+    if (action.type === 'haunt') haunt(state, player, action.kind, action.x, action.y, events);
+    else if (action.type === 'curse' && !player.curseUsed && player.killerId !== null) {
+      player.curseUsed = true;
+      state.players[player.killerId].cursedTurn = state.turn + 1;
+      events.push({ type: 'cursed', playerId });
+    } else events.push({ type: 'blocked', playerId, reason: 'eliminated' });
     return { state, events };
   }
   const apBefore = player.ap;
@@ -1257,7 +1340,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       }
       const index = cellIndex(state, x, y);
       const terrain = state.map.terrain[index];
-      const baseCost = TERRAIN[terrain].moveCost;
+      const baseCost = moveCostOf(state, player, index);
       // 4.3 健脚：草原と砂浜の移動が1ターンに1回無料
       const free =
         player.publicTrait === 'swift_feet' &&
@@ -1300,6 +1383,50 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     case 'use':
       useItem(state, player, action.item, rng, events);
       break;
+    case 'hunt': {
+      const npc = state.npcs.find((n) => n.id === action.npcId);
+      if (player.ap < HUNT_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+        break;
+      }
+      const weapon = weaponsBestFirst(player, phaseOf(state.turn) === 'night').find(
+        (w) => npc && chasePath(state, player, npc, w, player.ap - HUNT_AP),
+      );
+      const path = npc && weapon ? chasePath(state, player, npc, weapon, player.ap - HUNT_AP) : null;
+      if (!npc || !weapon || !path) {
+        player.ap -= HUNT_AP;
+        events.push({ type: 'attackFizzled', playerId });
+        break;
+      }
+      for (const index of path) {
+        const terrain = state.map.terrain[index];
+        const cost = moveCostOf(state, player, index)!;
+        player.x = index % state.map.width;
+        player.y = Math.floor(index / state.map.width);
+        player.ap -= cost;
+        refreshMemory(state, player);
+        events.push({ type: 'moved', playerId, x: player.x, y: player.y, terrain, cost });
+        arrive(state, player, rng, events);
+        if (!player.alive || player.ap < HUNT_AP) break;
+      }
+      if (!player.alive || player.ap < HUNT_AP) break;
+      player.ap -= HUNT_AP;
+      player.hidden = false;
+      const damage =
+        (weapon.rollsD3 ? rng.int(1, 3) : 0) + weapon.bonus + (hasRole(player, 'soldier') ? SOLDIER.damage : 0);
+      const hit = weapon.hit + (hasRole(player, 'soldier') ? SOLDIER.hit : 0);
+      huntNpc(state, player, npc, hit, damage, rng, events);
+      break;
+    }
+    case 'aid': {
+      const npc = state.npcs.find((n) => n.id === action.npcId);
+      const here = npc && npc.x === player.x && npc.y === player.y && npc.kind === 'castaway' && npc.followerOf == null;
+      if (!here) events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      else if (player.ap < AID_AP) events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      else if (aidNpc(player, npc, rng, events)) player.ap -= AID_AP;
+      else events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
+      break;
+    }
     case 'heal':
       heal(state, player, action.targetId, events);
       break;
@@ -1422,7 +1549,8 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
         break;
       }
       const inHut = state.structures[cellIndex(state, player.x, player.y)]?.kind === 'hut';
-      const healed = Math.min(player.maxHp - player.hp, player.ap * (inHut ? REST_HUT_MULTIPLIER : 1));
+      // 9.2 最終局面では休息で回復しない
+      const healed = state.finalPhase ? 0 : Math.min(player.maxHp - player.hp, player.ap * (inHut ? REST_HUT_MULTIPLIER : 1));
       player.hp += healed;
       player.ap = 0;
       player.restedTurn = state.turn;
@@ -1452,7 +1580,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     case 'hide': {
       if (player.ap < HIDE_AP) {
         events.push({ type: 'blocked', playerId, reason: 'noAp' });
-      } else if (!TERRAIN[state.map.terrain[cellIndex(state, player.x, player.y)]].canHide) {
+      } else if (state.finalPhase || !TERRAIN[state.map.terrain[cellIndex(state, player.x, player.y)]].canHide) {
         events.push({ type: 'blocked', playerId, reason: 'cannotHide' });
       } else {
         player.ap -= HIDE_AP;
@@ -1590,6 +1718,17 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
   }
   const steps: ResolutionStep[] = [];
 
+  // 8.5 幽霊の怪異は解決の最初に起きる
+  for (const ghost of previous.players) {
+    if (ghost.alive) continue;
+    for (const action of plans[ghost.id] ?? []) {
+      if (action.type !== 'haunt' && action.type !== 'curse') continue;
+      const result = applyAction(state, { ...action, playerId: ghost.id });
+      state = result.state;
+      steps.push({ actorId: ghost.id, events: result.events, state });
+    }
+  }
+
   /** 特殊勝利の条件を満たしていれば確定する */
   const settleVictory = () => {
     const found = findWinner(state);
@@ -1627,7 +1766,7 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
       }
       steps.push({ actorId: playerId, events, state });
       // 誰かがその場で勝った（船に乗った、いかだで出た、フルコースを食べた）
-      if (state.finished || settleVictory()) {
+      if (state.finished || (!state.finalPhase && settleVictory())) {
         finishWith();
         return { state, steps };
       }
@@ -1651,6 +1790,21 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
   state.whisperIntents = [];
   if (whisperEvents.length > 0) steps.push({ actorId: null, events: whisperEvents, state });
 
+  // 9.1 解決の最後に動物が動く。9.2 沈んだマスに残っていると脱落する
+  if (state.world) {
+    state = JSON.parse(JSON.stringify(state)) as GameState;
+    const rng = new Rng(state.rngState);
+    const worldEvents: GameEvent[] = [];
+    const before = state.players.map((p) => p.alive);
+    moveNpcs(state, rng, worldEvents);
+    drownCheck(state, worldEvents);
+    state.players.forEach((player, id) => {
+      if (before[id] && !player.alive) worldEvents.push({ type: 'playerEliminated', playerId: id });
+    });
+    state.rngState = rng.state;
+    if (worldEvents.length > 0) steps.push({ actorId: null, events: worldEvents, state });
+  }
+
   // 終了フェーズ。最後の1人（執念で復活を待つ人は数に入れる）
   const finish = () => {
     if (state.finished) {
@@ -1664,6 +1818,13 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     state.finished = true;
     state.winnerId = lastOneStanding ? alive[0].id : null;
     state.victoryReason = lastOneStanding ? 'lastStanding' : null;
+    // 9.2 全員が同時に倒れたら、直前のHPが高い人の勝ち。同じなら進み具合が大きい人
+    if (alive.length === 0 && state.finalPhase) {
+      const score = (p: PlayerState) => p.hpAtTurnStart * 1000 + p.progress.explored.length + p.progress.warPoints * 10 + p.progress.healCount * 10;
+      const best = [...state.players].sort((a, b) => score(b) - score(a))[0];
+      state.winnerId = best.id;
+      state.victoryReason = 'lastStanding';
+    }
     finishWith();
     return true;
   };
@@ -1692,7 +1853,7 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     }
   }
   steps.push({ actorId: null, events, state });
-  if (!state.finished && settleVictory()) {
+  if (!state.finished && !state.finalPhase && settleVictory()) {
     finishWith();
     return { state, steps };
   }

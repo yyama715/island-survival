@@ -14,7 +14,13 @@ import {
   finishDraft,
   getDraftView,
   getPlayerView,
+  ghostPlanForCpu,
+  hashSeed,
+  JOB_IDS,
+  planForCpu,
+  Rng,
   useMindRead,
+  type CpuLevel,
   type DraftState,
   type JobId,
   ITEMS,
@@ -45,6 +51,8 @@ export interface RoomOptions {
   useDraft?: boolean;
   /** キャラ選択の1段階あたりの制限時間 */
   draftSeconds?: number;
+  /** 天候やイベントを動かす。指定がなければ useDraft と同じ */
+  world?: boolean;
   /** 誰もいなくなったルームを消すまでの時間 */
   emptyRoomMs?: number;
   maxRooms?: number;
@@ -63,7 +71,14 @@ interface Member {
   connection: Connection | null;
   plan: PlanAction[];
   ready: boolean;
+  /** CPUの席 */
+  cpu?: CpuLevel;
 }
+
+const CPU_LEVELS: readonly string[] = ['easy', 'normal', 'hard'];
+/** 10.3 切断した人の代打ちは「ふつう」 */
+const SUBSTITUTE_LEVEL: CpuLevel = 'normal';
+const CPU_WHISPER_REPLY = '休戦しないか？ 今は争いたくない。';
 
 type Stage = 'lobby' | 'draft' | 'planning' | 'resolving' | 'finished';
 const DEFAULT_DRAFT_SECONDS = 40;
@@ -81,7 +96,8 @@ function cleanSetup(value: unknown): RoomSetup {
     ? Number(raw.planSeconds)
     : DEFAULT_PLAN_SECONDS;
   const seed = typeof raw.seed === 'string' ? raw.seed.trim().slice(0, SEED_MAX) : '';
-  return { players, mapSize, planSeconds, ...(seed ? { seed } : {}) };
+  const cpuLevel = typeof raw.cpuLevel === 'string' && CPU_LEVELS.includes(raw.cpuLevel) ? raw.cpuLevel : null;
+  return { players, mapSize, planSeconds, cpuLevel, ...(seed ? { seed } : {}) };
 }
 
 /** 送られてきた予約の形を確かめる（中身の妥当性は projectPlan で見る） */
@@ -105,6 +121,17 @@ function cleanPlan(value: unknown): PlanAction[] | null {
       raw?.type === 'falseAlarm'
     ) {
       plan.push({ type: raw.type });
+    } else if (raw?.type === 'curse') {
+      plan.push({ type: 'curse' });
+    } else if ((raw?.type === 'hunt' || raw?.type === 'aid') && Number.isInteger(raw.npcId)) {
+      plan.push({ type: raw.type, npcId: raw.npcId as number });
+    } else if (
+      raw?.type === 'haunt' &&
+      ['fog', 'noise', 'lure', 'bless'].includes(raw.kind as string) &&
+      Number.isInteger(raw.x) &&
+      Number.isInteger(raw.y)
+    ) {
+      plan.push({ type: 'haunt', kind: raw.kind as 'fog', x: raw.x as number, y: raw.y as number });
     } else if (raw?.type === 'heal' && Number.isInteger(raw.x) && Number.isInteger(raw.y)) {
       const who = raw.who === undefined ? {} : Number.isInteger(raw.who) ? { who: raw.who as number } : null;
       if (!who) return null;
@@ -144,6 +171,9 @@ class Room {
   draft: DraftState | null = null;
   seed = '';
   private nextMemberId = 0;
+  private get useSubstitute() {
+    return !!this.state?.world;
+  }
   private timer: ReturnType<typeof setTimeout> | null = null;
   private deadline = 0;
   private paused = false;
@@ -155,6 +185,7 @@ class Room {
     private readonly inviteOrigin: string,
     private readonly useDraft: boolean = true,
     private readonly draftSeconds: number = DEFAULT_DRAFT_SECONDS,
+    private readonly world: boolean = true,
   ) {}
 
   addMember(name: string, connection: Connection): Member {
@@ -192,8 +223,8 @@ class Room {
   private status(): PlanStatus[] {
     return this.members.map((m) => ({
       id: this.seatOf(m),
-      ready: m.ready || !this.alive(m),
-      connected: !!m.connection,
+      ready: m.ready || !!m.cpu || (!this.alive(m) && !this.state?.world),
+      connected: !!m.connection || !!m.cpu,
     }));
   }
 
@@ -224,20 +255,65 @@ class Room {
     if (member.id !== this.hostId) return 'notHost';
     if (this.stage !== 'lobby') return 'alreadyStarted';
     this.seed = this.setup.seed ?? randomBytes(4).toString('hex');
+    // 10.3 空いた席をCPUで埋める。前のゲームのCPUは入れ替える
+    this.members = this.members.filter((m) => !m.cpu);
+    if (this.setup.cpuLevel) {
+      for (let i = this.members.length; i < this.setup.players; i++) {
+        this.members.push({
+          id: this.nextMemberId++,
+          token: randomUUID(),
+          name: `CPU${i - this.members.filter((m) => !m.cpu).length + 1}`,
+          connection: null,
+          plan: [],
+          ready: true,
+          cpu: this.setup.cpuLevel,
+        });
+      }
+    }
     if (!this.useDraft) {
       this.state = createGame(this.seed, this.setup.players, {
         mapSize: this.setup.mapSize,
         seats: this.members.length,
         names: this.members.map((m) => m.name),
+        world: this.world,
       });
       this.beginPlanning();
       return null;
     }
     this.draft = createDraft(this.seed, this.setup.players, this.members.length, this.setup.mapSize);
     this.stage = 'draft';
-    this.armDraftTimer();
-    for (const m of this.members) this.sendCurrent(m);
+    this.updateDraft(this.draft);
     return null;
+  }
+
+  /** CPUの番なら、人間を待たずに選ぶ */
+  private cpuDraftMoves(state: DraftState): DraftState {
+    let next = state;
+    const isCpu = (seat: number) => !!this.members[seat]?.cpu;
+    for (let guard = 0; guard < 40 && next.phase !== 'done'; guard++) {
+      const before = next;
+      if (next.phase === 'reroll') {
+        next.seats.forEach((_, seat) => {
+          if (isCpu(seat) && !next.seats[seat].rerollDone) next = draftReroll(next, seat, false) ?? next;
+        });
+      } else if (next.phase === 'job' && isCpu(next.order[next.cursor])) {
+        const open = JOB_IDS.filter((id) => !next.seats.some((s) => s.job === id));
+        const seat = next.order[next.cursor];
+        const job = new Rng(hashSeed(`${this.seed}:${seat}`)).pick(open);
+        next = draftPickJob(next, seat, job) ?? next;
+      } else if (next.phase === 'items') {
+        next.seats.forEach((seat, index) => {
+          if (!isCpu(index) || seat.items) return;
+          const allowance = getDraftView(next, index).allowance;
+          next = draftPickItems(next, index, Array.from({ length: allowance }, (_, i) => i)) ?? next;
+        });
+      } else if (next.phase === 'start' && isCpu(next.order[next.cursor])) {
+        const open = next.starts.map((_, i) => i).filter((i) => !next.seats.some((s) => s.start === i));
+        next = draftPickStart(next, next.order[next.cursor], open[0]) ?? next;
+      }
+      if (next === before) break;
+    }
+    return next;
   }
 
   private armDraftTimer() {
@@ -249,7 +325,8 @@ class Room {
     }, this.draftSeconds * 1000);
   }
 
-  private updateDraft(next: DraftState) {
+  private updateDraft(incoming: DraftState) {
+    const next = this.cpuDraftMoves(incoming);
     this.draft = next;
     if (next.phase === 'done') {
       this.clearTimer();
@@ -257,6 +334,7 @@ class Room {
         mapSize: this.setup.mapSize,
         setups: finishDraft(next),
         names: this.members.map((m) => m.name),
+        world: this.world,
       });
       this.draft = null;
       this.beginPlanning();
@@ -295,8 +373,32 @@ class Room {
       m.plan = [];
       m.ready = false;
     }
+    this.cpuPlans();
     this.armDeadline();
     for (const m of this.members) if (m.connection) this.sendCurrent(m);
+  }
+
+  /** CPUの予約を作る。人間と同じ見え方だけで判断する */
+  private cpuPlans() {
+    this.members.forEach((m, seat) => {
+      if (!m.cpu) return;
+      m.plan = this.planFor(seat, m.cpu);
+      m.ready = true;
+      // 密談に誘われたら定型の返事をする
+      for (const whisper of this.state!.whispers) {
+        if (whisper.to !== seat || whisper.status !== 'pending') continue;
+        const accepted = respondWhisper(this.state!, seat, whisper.id, true);
+        if (!accepted) continue;
+        this.state = sendWhisper(accepted, seat, whisper.id, CPU_WHISPER_REPLY) ?? accepted;
+      }
+    });
+  }
+
+  private planFor(seat: number, level: CpuLevel): PlanAction[] {
+    const view = getPlayerView(this.state!, seat);
+    const rng = new Rng((this.state!.rngState + seat * 7919) | 0);
+    const plan = view.me.alive ? planForCpu(view, level, rng) : ghostPlanForCpu(view, rng);
+    return projectPlan(view, plan).ok ? plan : [];
   }
 
   private armDeadline() {
@@ -361,6 +463,7 @@ class Room {
       hostId: this.members.findIndex((m) => m.id === this.hostId),
       youAreHost: member.id === this.hostId,
       players: this.state!.players.map((p) => ({
+        cpu: !!this.members[p.id]?.cpu,
         id: p.id,
         name: p.name,
         job: p.job,
@@ -377,7 +480,7 @@ class Room {
     const plan = cleanPlan(actions);
     if (!plan) return 'badPlan';
     const seat = this.seatOf(member);
-    if (!this.state!.players[seat].alive) return 'badPlan';
+    if (!this.state!.players[seat].alive && !this.state!.world) return 'badPlan';
     if (!projectPlan(getPlayerView(this.state!, seat), plan).ok) return 'badPlan';
     member.plan = plan;
     member.ready = ready === true;
@@ -404,7 +507,8 @@ class Room {
 
   private resolveIfEveryoneReady() {
     if (this.stage !== 'planning') return;
-    const waitingOn = this.members.filter((m) => m.connection && this.alive(m));
+    // 幽霊も怪異を選ぶので、接続している人間は全員待つ
+    const waitingOn = this.members.filter((m) => m.connection && (this.alive(m) || this.state!.world));
     if (waitingOn.length > 0 && waitingOn.every((m) => m.ready)) this.resolve();
   }
 
@@ -413,7 +517,11 @@ class Room {
     this.stage = 'resolving';
     const previous = this.state!;
     const plans: Record<number, PlanAction[]> = {};
-    this.members.forEach((m, seat) => (plans[seat] = m.plan));
+    this.members.forEach((m, seat) => {
+      // 10.3 切断している人はCPUが代わりに動く
+      if (!m.cpu && !m.connection && m.plan.length === 0 && this.useSubstitute) plans[seat] = this.planFor(seat, SUBSTITUTE_LEVEL);
+      else plans[seat] = m.plan;
+    });
     const { state, steps } = resolveTurn(previous, plans);
     this.state = state;
 
@@ -509,6 +617,7 @@ export class RoomManager {
   private readonly stepMs: number;
   private readonly useDraft: boolean;
   private readonly draftSeconds: number;
+  private readonly world: boolean;
   private readonly emptyRoomMs: number;
   private readonly maxRooms: number;
   private readonly inviteOrigin: string;
@@ -517,6 +626,7 @@ export class RoomManager {
     this.stepMs = options.stepMs ?? 500;
     this.useDraft = options.useDraft ?? true;
     this.draftSeconds = options.draftSeconds ?? DEFAULT_DRAFT_SECONDS;
+    this.world = options.world ?? this.useDraft;
     this.emptyRoomMs = options.emptyRoomMs ?? 30 * 60 * 1000;
     this.maxRooms = options.maxRooms ?? 200;
     this.inviteOrigin = options.inviteOrigin ?? '';
@@ -542,6 +652,7 @@ export class RoomManager {
           this.inviteOrigin,
           this.useDraft,
           this.draftSeconds,
+          this.world,
         );
         this.rooms.set(room.code, room);
         this.enter(room, room.addMember(message.name, connection), connection);

@@ -1,5 +1,27 @@
 // 出来事を文章にする。
-import { ITEMS, RECIPES, TERRAIN, TRAITS, type GameEvent, type ItemStack, type PlanAction, type TerrainId, type VictoryReason } from '../core/index';
+import {
+  ITEMS,
+  NPC_NAMES,
+  RECIPES,
+  TERRAIN,
+  TRAITS,
+  type GameEvent,
+  type HauntKind,
+  type ItemStack,
+  type PlanAction,
+  type TerrainId,
+  type VictoryReason,
+  type Weather,
+} from '../core/index';
+
+export const WEATHER_NAMES: Record<Weather, string> = { sunny: '晴れ', rain: '雨', storm: '嵐' };
+export const HAUNT_NAMES: Record<HauntKind, string> = { fog: '濃霧', noise: '物音', lure: '動物を誘う', bless: '守護' };
+export const HAUNT_NOTES: Record<HauntKind, string> = {
+  fog: '周りのマスの視界を狭める',
+  noise: 'このマスに偽の足跡を残す',
+  lure: '近くの動物をこのマスへ1歩進める',
+  bless: 'このマスの採取率を上げる',
+};
 
 export const VICTORY_TEXT: Record<VictoryReason, string> = {
   lastStanding: '最後の1人として生き残った',
@@ -187,6 +209,51 @@ export function describeEvent(event: GameEvent, nameOf: (id: number) => string, 
       return event.winnerId === null ? '誰も生き残らなかった' : `${nameOf(event.winnerId)} の勝ち！`;
     case 'turnStarted':
       return `―― ${event.day}日目の${event.phase === 'day' ? '昼' : '夜'} ――`;
+    case 'weatherChanged':
+      return `今日の天気は${WEATHER_NAMES[event.weather]}`;
+    case 'supplyDropped':
+      return '空から支援物資が落ちてきた！（地図に目印）';
+    case 'quake':
+      return '地震だ！ 島のどこかの地形が変わったらしい';
+    case 'herdAppeared':
+      return '動物の群れが島を駆け抜けていく！';
+    case 'boarAppeared':
+      return '大イノシシが島に現れた！';
+    case 'castawayAppeared':
+      return '浜辺に誰かが打ち上げられた';
+    case 'tideNotice':
+      return '潮が満ちてきた。明日、砂浜が沈む（地図に目印）';
+    case 'tideRose':
+      return '砂浜が海に沈んだ';
+    case 'finalStarted':
+      return '最終局面！ 島が外側から沈み始めた。もう特殊勝利はできない';
+    case 'finalSunk':
+      return `島の外側が${event.cells}マス沈んだ`;
+    case 'weatherHit':
+      if (event.damage > 0) return `激しい風雨に打たれてHP−${event.damage}`;
+      if (event.water > 0) return `雨水を飲んだ（水分+${event.water}）`;
+      if (event.water < 0) return `暑さで水分${event.water}`;
+      return null;
+    case 'npcHit':
+      return `${NPC_NAMES[event.kind]}に襲われた！ HP−${event.damage}`;
+    case 'monkeyStole':
+      return `猿に${ITEMS[event.item].name}を盗まれた！`;
+    case 'hunted': {
+      if (!event.hit) return `${NPC_NAMES[event.kind]}を狙ったが、外れた`;
+      if (!event.killed) return `${NPC_NAMES[event.kind]}に当たった！ まだ倒れない`;
+      const lost = event.lost.length > 0 ? `（${stacksText(event.lost)}は持ちきれず置いてきた）` : '';
+      return `${NPC_NAMES[event.kind]}を仕留めた！ ${stacksText(event.gained)}${lost}`;
+    }
+    case 'aided': {
+      const lost = event.lost.length > 0 ? `（${stacksText(event.lost)}は持ちきれず置いてきた）` : '';
+      return `漂流者を手当てした。お礼に${stacksText(event.gained) || '感謝の言葉'}をもらい、一緒に来てくれる${lost}`;
+    }
+    case 'drowned':
+      return event.playerId === myId ? '波にのまれた…' : `${nameOf(event.playerId)}が波にのまれた`;
+    case 'haunted':
+      return `幽霊の力：${HAUNT_NAMES[event.kind]}`;
+    case 'cursed':
+      return '自分を倒した相手に祟りをかけた';
   }
 }
 
@@ -218,6 +285,10 @@ export function describePlanAction(action: PlanAction, terrain: TerrainId | null
   if (action.type === 'scout') return '遠くを見る（鷹の目）';
   if (action.type === 'falseAlarm') return '偽の知らせを出す';
   if (action.type === 'discard') return `${ITEMS[action.item].name}を捨てる`;
+  if (action.type === 'hunt') return '動物を狩る';
+  if (action.type === 'aid') return '漂流者を手当てする';
+  if (action.type === 'haunt') return `怪異：${HAUNT_NAMES[action.kind]}`;
+  if (action.type === 'curse') return '祟りをかける';
   const where = terrain ? TERRAIN[terrain].name : '霧の中';
   return `${DIRECTION_NAME[action.direction]}へ（${where}）`;
 }

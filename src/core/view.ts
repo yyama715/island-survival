@@ -1,6 +1,10 @@
 // プレイヤーごとの見え方。画面へ送るのはこの結果だけにする（10.2 霧の不正閲覧を防ぐ）。
 import {
+  AID_AP,
   AMBUSH_AP,
+  HUNT_AP,
+  SWIM_COST,
+  WEATHER,
   ATTACK_AP,
   BOTTLE_ITEM,
   EARLY_PROTECTION_TURNS,
@@ -25,8 +29,10 @@ import { RAFT, SMOKE } from './roles';
 import { courseIngredients, describeProgress, type GoalLine } from './victory';
 import type {
   JobId,
+  NpcKind,
   TraitId,
   VictoryReason,
+  Weather,
   Direction,
   GameEvent,
   GameState,
@@ -60,6 +66,10 @@ export interface CellView {
   /** 小屋は視界内なら見える。罠は置いた本人にだけ見える */
   structure: StructureKind | null;
   figures: Figure[];
+  /** 視界内の動物と漂流者 */
+  npcs: { id: number; kind: NpcKind; following: boolean }[];
+  /** 動物の足跡（幽霊の偽の足跡と見分けがつかない） */
+  footprint: boolean;
 }
 
 export interface WhisperView {
@@ -119,7 +129,11 @@ export interface PlayerView {
   /** 勝利条件の進み具合（本人にだけ） */
   goals: GoalLine[];
   /** 7.4 地図に出す公開の目印 */
-  marks: { x: number; y: number; kind: 'smoke' | 'ship' | 'shipComing' }[];
+  marks: { x: number; y: number; kind: 'smoke' | 'ship' | 'shipComing' | 'sink' | 'supply' }[];
+  weather: Weather;
+  finalPhase: boolean;
+  /** 8.5 幽霊としての情報 */
+  ghost: { hauntReady: boolean; curseReady: boolean } | null;
   victoryReason: VictoryReason | null;
   maxHp: number;
   slots: number;
@@ -129,6 +143,10 @@ export interface PlayerView {
   scoutSpent: boolean;
   /** このターンの健脚はもう使った */
   freeMoveSpent: boolean;
+  /** 沈んだマス */
+  sunk: number[];
+  /** 天候やイベントが動いているゲームか */
+  worldActive: boolean;
   /** 8.1 全員分の行動順と行動値は計画フェーズの前に公開する */
   initiative: InitiativeEntry[];
   finished: boolean;
@@ -139,7 +157,9 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
   const me = state.players[playerId];
   const { width, height } = state.map;
   const phase = phaseOf(state.turn);
-  const visible = new Set(me.alive ? visibleCells(state, me) : []);
+  // 8.5 幽霊は霧のない全マップと生存者の位置が見える
+  const isGhost = state.world && !me.alive;
+  const visible = new Set(isGhost ? state.map.terrain.map((_, i) => i) : me.alive ? visibleCells(state, me) : []);
   // 4.3 鷹の目で見ているマス
   for (const scout of state.scouts) {
     if (scout.playerId === me.id && scout.untilTurn >= state.turn) for (const cell of scout.cells) visible.add(cell);
@@ -157,9 +177,9 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
           if (!other.alive || other.x !== x || other.y !== y) continue;
           if (other.id === me.id) figures.push({ kind: 'self', id: other.id, name: other.name });
           // 隠れている人と死んだふりの人は、同じマスにいるときしか見えない
-          else if ((other.hidden || other.playingDead) && (other.x !== me.x || other.y !== me.y)) continue;
+          else if (!isGhost && (other.hidden || other.playingDead) && (other.x !== me.x || other.y !== me.y)) continue;
           // 3.3 松明を持つ人や夜目の人には、夜でも誰なのか分かる
-          else if (!seesNames(state, me, other)) figures.push({ kind: 'shadow' });
+          else if (!isGhost && !seesNames(state, me, other)) figures.push({ kind: 'shadow' });
           else figures.push({ kind: 'player', id: other.id, name: other.name });
         }
       }
@@ -175,6 +195,12 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
         relic: isVisible && phase === 'day' && !!state.relics[index],
         structure: seesStructure ? structure.kind : null,
         figures,
+        npcs: isVisible
+          ? state.npcs
+              .filter((n) => n.x === x && n.y === y)
+              .map((n) => ({ id: n.id, kind: n.kind, following: n.followerOf != null }))
+          : [],
+        footprint: (isVisible || !!remembered) && state.footprints.some((f) => f.cell === index && f.untilTurn >= state.turn),
       });
     }
   }
@@ -211,6 +237,11 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
   if (ship && !ship.gone && (ship.callerId === me.id || state.turn >= ship.arrivesTurn - 1)) {
     marks.push({ x: ship.x, y: ship.y, kind: state.turn >= ship.arrivesTurn ? 'ship' : 'shipComing' });
   }
+  for (const cell of state.sinkNext) {
+    marks.push({ x: cell % width, y: Math.floor(cell / width), kind: 'sink' });
+  }
+  if (state.supply) marks.push({ ...state.supply, kind: 'supply' });
+  const hauntStamp = state.finalPhase ? state.turn : dayOf(state.turn);
 
   return {
     width,
@@ -222,12 +253,19 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
     secret: { trait: me.secretTrait, extraJob: me.extraJob, used: me.secretUsed, radioFixed: me.radioFixed },
     goals: describeProgress(state, me),
     marks,
+    weather: state.weather,
+    finalPhase: state.finalPhase,
+    ghost: isGhost
+      ? { hauntReady: me.hauntedOn !== hauntStamp, curseReady: !me.curseUsed && me.killerId !== null }
+      : null,
     victoryReason: state.victoryReason,
     maxHp: me.maxHp,
     slots: slotsOf(me),
     freeWhisperSpent: me.freeWhisperDay === dayOf(state.turn),
     scoutSpent: me.scoutDay === dayOf(state.turn),
     freeMoveSpent: me.freeMoveTurn === state.turn,
+    sunk: state.sunk,
+    worldActive: state.world,
     me: {
       id: me.id,
       name: me.name,
@@ -294,7 +332,16 @@ export interface PlanProjection {
 export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): PlanProjection {
   let { x, y, ap } = view.me;
   let uncertain = false;
-  let ok = view.me.alive && plan.length <= MAX_PLAN_ACTIONS;
+  // 8.5 幽霊は怪異と祟りだけができる
+  if (!view.me.alive) {
+    const ghostOk =
+      !!view.ghost &&
+      plan.every((a) => a.type === 'haunt' || a.type === 'curse') &&
+      plan.filter((a) => a.type === 'haunt').length <= (view.ghost.hauntReady ? 1 : 0) &&
+      plan.filter((a) => a.type === 'curse').length <= (view.ghost.curseReady ? 1 : 0);
+    return { ok: ghostOk, x, y, ap, uncertain: false, owned: {} };
+  }
+  let ok = plan.length <= MAX_PLAN_ACTIONS;
   const me = view.roster.find((p) => p.id === view.me.id);
   let attacks = 0;
   let freeWhisperUsed = view.freeWhisperSpent;
@@ -408,6 +455,17 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       if (!view.cells[action.y * view.width + action.x] || view.cells[action.y * view.width + action.x].x !== action.x) ok = false;
     } else if (action.type === 'falseAlarm') {
       if (view.secret.trait !== 'false_alarm' || view.secret.used) ok = false;
+    } else if (action.type === 'hunt') {
+      ap -= HUNT_AP;
+      const seen = view.cells.some((c) => c.npcs.some((n) => n.id === action.npcId && n.kind !== 'castaway'));
+      if (!seen) ok = false;
+    } else if (action.type === 'aid') {
+      ap -= AID_AP;
+      const here = view.cells[y * view.width + x];
+      if (!here.npcs.some((n) => n.id === action.npcId && n.kind === 'castaway' && !n.following)) ok = false;
+      if (me?.job !== 'doctor' && view.secret.extraJob !== 'doctor') spend('bandage', 1);
+    } else if (action.type === 'haunt' || action.type === 'curse') {
+      ok = false;
     } else {
       moved = true;
       if (ambushes > 0) ok = false;
@@ -421,10 +479,14 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       const known = view.cells[ny * view.width + nx].terrain;
       if (known === null) uncertain = true;
       let cost = known === null ? 1 : TERRAIN[known].moveCost;
+      // 泳ぎ上手は沈んだマスを渡れる
+      if (cost === null && me?.publicTrait === 'swimmer' && view.sunk.includes(ny * view.width + nx)) cost = SWIM_COST;
       if (cost === null) {
         ok = false;
         continue;
       }
+      // 嵐の日は移動コスト+1
+      if (view.weather === 'storm' && view.worldActive) cost += WEATHER.stormMoveCost;
       // 4.3 健脚：草原と砂浜の移動が1ターンに1回無料
       if (me?.publicTrait === 'swift_feet' && !freeMoveUsed && !view.freeMoveSpent && (known === 'grass' || known === 'beach')) {
         freeMoveUsed = true;
@@ -524,6 +586,16 @@ export function replayFor(viewerId: number, previous: GameState, steps: readonly
           break;
         }
         // 全員に公開される出来事
+        case 'weatherChanged':
+        case 'supplyDropped':
+        case 'quake':
+        case 'herdAppeared':
+        case 'boarAppeared':
+        case 'castawayAppeared':
+        case 'tideNotice':
+        case 'tideRose':
+        case 'finalStarted':
+        case 'finalSunk':
         case 'traitRevealed':
         case 'nearVictory':
         case 'lordCaught':
@@ -540,6 +612,10 @@ export function replayFor(viewerId: number, previous: GameState, steps: readonly
           changed = true;
           break;
         // 手番と関係なく本人にだけ届くもの
+        case 'weatherHit':
+        case 'npcHit':
+        case 'monkeyStole':
+        case 'drowned':
         case 'wasHealed':
         case 'shipCalled':
         case 'statusDamage':

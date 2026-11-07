@@ -1,19 +1,24 @@
 // 画面。サーバーから届いた見え方だけで描く。ルールの判定はサーバーが行い、画面は見込みの計算だけをする。
+import '@fontsource/dotgothic16';
 import {
+  AID_AP,
   AMBUSH_AP,
   ATTACK_AP,
+  CPU_LEVEL_NAMES,
   BOTTLE_ITEM,
   EXPLORE_AP,
   GATHER_AP,
   GUARD_AP,
   HEAL_AP,
   HIDE_AP,
+  HUNT_AP,
   isProtected,
   ITEMS,
   JOB_IDS,
   JOBS,
   LETTER,
   MAP_SIZE_NAMES,
+  NPC_NAMES,
   projectPlan,
   RARITY_NAMES,
   recipeAp,
@@ -28,7 +33,9 @@ import {
   WHISPER,
   WHISPER_AP,
   type CellView,
+  type CpuLevel,
   type Direction,
+  type HauntKind,
   type ItemId,
   type MapSize,
   type PlanAction,
@@ -39,32 +46,46 @@ import {
 } from '../core/index';
 import type { PlanStatus, ServerMessage } from '../net/protocol';
 import { Net } from './net';
-import { describeEvent, describePlanAction, VICTORY_TEXT } from './text';
+import {
+  arrowUrl,
+  bubbleUrl,
+  fogUrl,
+  footprintUrl,
+  ghostUrl,
+  iconUrl,
+  itemUrl,
+  markUrl,
+  npcUrl,
+  personUrl,
+  rainUrl,
+  relicUrl,
+  shadowUrl,
+  shoreUrl,
+  spriteImg,
+  structureUrl,
+  terrainUrl,
+  waveUrl,
+  weatherIcon,
+} from './sprites';
+import { describeEvent, describePlanAction, HAUNT_NAMES, HAUNT_NOTES, VICTORY_TEXT, WEATHER_NAMES } from './text';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const GLYPH: Record<TerrainId, string> = {
-  sea: '',
-  beach: '砂',
-  grass: '草',
-  forest: '森',
-  rock: '岩',
-  mountain: '山',
-  spring: '泉',
-  river: '川',
-  cave: '洞',
-  wreck: '船',
-  ruins: '遺',
-};
-
 const STRUCTURE_NAMES = { hut: '小屋', trap: '自分の罠', fort: '砦', smoke: '狼煙', raft: 'いかだ' } as const;
-const STRUCTURE_GLYPH = { hut: '⌂', trap: '×', fort: '▣', smoke: '↑', raft: '≈' } as const;
 const STRUCTURE_NOTES = {
   hut: '小屋がある（休息の回復が倍）',
   trap: '自分の置いた罠がある',
   fort: '砦がある（中にいると防御+2）',
   smoke: '狼煙が上がっている',
   raft: 'いかだがある',
+} as const;
+
+const MARK_NOTES = {
+  smoke: '狼煙が上がっている',
+  ship: '救助船が来ている！ 最初に入った人が乗れる',
+  shipComing: '救助船がここへ向かっている',
+  sink: 'このマスは次に沈む！',
+  supply: '支援物資が落ちている。採取で拾える',
 } as const;
 
 const KEY_DIRECTION: Record<string, Direction> = {
@@ -101,6 +122,7 @@ let deadline = 0;
 let inspected: { x: number; y: number } | null = null;
 let log: string[] = [];
 let cellButtons: HTMLButtonElement[] = [];
+const cellHtml = new WeakMap<HTMLButtonElement, string>();
 let builtSize = 0;
 let replayTimer: ReturnType<typeof setTimeout> | null = null;
 let actingId: number | null = null;
@@ -135,6 +157,11 @@ function showScreen(screen: Screen) {
   $('screen-draft').hidden = screen !== 'draft';
   $('screen-game').hidden = screen !== 'game';
   $('screen-result').hidden = screen !== 'result';
+}
+
+/** 席の人物の絵。職業が決まれば帽子が変わる */
+function seatSprite(id: number, job: JobId | null = null): HTMLImageElement {
+  return spriteImg(personUrl(job, id), 'sprite sprite-person');
 }
 
 function toast(text: string, ms = TOAST_MS) {
@@ -263,14 +290,29 @@ function handleMessage(message: ServerMessage) {
       $('result-title').textContent =
         message.winnerName === null ? '誰も生き残らなかった' : `${message.winnerName} の勝ち！`;
       $('result-reason').textContent = message.reason ? VICTORY_TEXT[message.reason] : '';
+      {
+        const winner = message.players.find((p) => p.id === message.winnerId);
+        const art = $<HTMLImageElement>('result-winner');
+        art.hidden = !winner;
+        if (winner) art.src = personUrl(winner.job, winner.id);
+      }
       // 10.1 リザルトでは全員の秘密特性と進み具合を公開する
       $('result-players').replaceChildren(
         ...message.players.map((player) => {
           const box = document.createElement('div');
           box.className = 'result-player';
+          const head = document.createElement('div');
+          head.className = 'result-head';
           const name = document.createElement('b');
           name.textContent = `${player.name}${player.id === message.winnerId ? '（勝者）' : ''}`;
-          box.append(name);
+          head.append(seatSprite(player.id, player.job), name);
+          if (player.cpu) {
+            const cpu = document.createElement('span');
+            cpu.className = 'tag tag-cpu';
+            cpu.textContent = 'CPU';
+            head.append(cpu);
+          }
+          box.append(head);
           const job = [player.job, player.extraJob].filter(Boolean).map((id) => JOBS[id as JobId].name).join(' + ');
           const traits = [player.publicTrait, player.secretTrait].filter(Boolean).map((id) => TRAITS[id as TraitId].name).join('、');
           const detail = document.createElement('p');
@@ -338,8 +380,6 @@ function renderLobby(message: Extract<ServerMessage, { t: 'lobby' }>) {
   $('lobby-members').replaceChildren(
     ...message.members.map((member) => {
       const row = document.createElement('li');
-      const dot = document.createElement('span');
-      dot.className = `dot p${member.id}`;
       const name = document.createElement('span');
       name.textContent = member.name;
       const note = document.createElement('span');
@@ -351,12 +391,13 @@ function renderLobby(message: Extract<ServerMessage, { t: 'lobby' }>) {
       ]
         .filter(Boolean)
         .join('・');
-      row.append(dot, name, note);
+      row.append(seatSprite(member.id), name, note);
       return row;
     }),
   );
   const seed = message.setup.seed ? `・シード値 ${message.setup.seed}` : '';
-  $('lobby-rules').textContent = `広さ「${MAP_SIZE_NAMES[message.setup.mapSize]}」・ターンの長さ ${message.setup.planSeconds}秒${seed}`;
+  const cpu = message.setup.cpuLevel ? `・空席はCPU（${CPU_LEVEL_NAMES[message.setup.cpuLevel]}）` : '';
+  $('lobby-rules').textContent = `広さ「${MAP_SIZE_NAMES[message.setup.mapSize]}」・ターンの長さ ${message.setup.planSeconds}秒${cpu}${seed}`;
   $('start-game').hidden = !hostCanStart;
   $('lobby-wait').hidden = hostCanStart;
 }
@@ -373,9 +414,10 @@ function traitLine(label: string, id: TraitId): HTMLElement {
   return line;
 }
 
-function choice(title: string, detail: string, label: string, onClick: (() => void) | null, picked = false): HTMLElement {
+function choice(title: string, detail: string, label: string, onClick: (() => void) | null, picked = false, art?: HTMLImageElement): HTMLElement {
   const row = document.createElement('div');
   row.className = 'choice';
+  if (art) row.append(art);
   const info = document.createElement('div');
   info.className = 'choice-info';
   const name = document.createElement('b');
@@ -446,6 +488,8 @@ function renderDraft(current: DraftView, names: string[]) {
           `機敏さ${def.agility}。${def.passive}。勝利条件：${def.goal}`,
           '選ぶ',
           myTurn && !taken ? () => net.send({ t: 'draftJob', job: id }) : null,
+          false,
+          seatSprite(current.you, id),
         ),
       );
     }
@@ -461,7 +505,7 @@ function renderDraft(current: DraftView, names: string[]) {
             if (draftItemPicks.has(index)) draftItemPicks.delete(index);
             else if (draftItemPicks.size < current.allowance) draftItemPicks.add(index);
             renderDraft(current, names);
-          }, draftItemPicks.has(index)),
+          }, draftItemPicks.has(index), spriteImg(itemUrl(stack.item))),
         );
       });
       const confirm = document.createElement('button');
@@ -497,14 +541,12 @@ function renderDraft(current: DraftView, names: string[]) {
   $('draft-seats').replaceChildren(
     ...current.seats.map((seat) => {
       const row = document.createElement('li');
-      const dot = document.createElement('span');
-      dot.className = `dot p${seat.id}`;
       const name = document.createElement('span');
       name.textContent = seatName(seat.id) + (seat.id === current.you ? '（あなた）' : '');
       const note = document.createElement('span');
       note.className = 'muted';
       note.textContent = `${seat.job ? JOBS[seat.job].name : '職業未定'}／${TRAITS[seat.publicTrait].name}`;
-      row.append(dot, name, note);
+      row.append(seatSprite(seat.id, seat.job), name, note);
       return row;
     }),
   );
@@ -528,7 +570,8 @@ function ensureMap(current: PlayerView) {
   });
 }
 
-const canEdit = () => planning && !ready && !!view?.me.alive;
+const isGhost = (current: PlayerView) => !current.me.alive && !!current.ghost;
+const canEdit = () => planning && !ready && !!view && (view.me.alive || isGhost(view));
 const nameOf = (id: number) => view?.roster.find((p) => p.id === id)?.name ?? `P${id + 1}`;
 
 /** 予約どおりに動いたときに通るマス */
@@ -585,7 +628,7 @@ function sendPlan() {
 
 function onCellTap(x: number, y: number) {
   if (!view) return;
-  if (canEdit()) {
+  if (canEdit() && view.me.alive) {
     const from = projectPlan(view, plan);
     const direction = (Object.keys(DELTA) as Direction[]).find(
       (d) => from.x + DELTA[d][0] === x && from.y + DELTA[d][1] === y,
@@ -601,11 +644,11 @@ function onCellTap(x: number, y: number) {
   render(false);
 }
 
-const hasOthers = (cell: CellView) => cell.figures.some((figure) => figure.kind !== 'self');
+const hasOthers = (cell: CellView) => cell.npcs.length > 0 || cell.figures.some((figure) => figure.kind !== 'self');
 
 /** 情報カードの操作ボタン。名前は自由入力なので textContent で入れる */
 function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellView) {
-  if (!canEdit() || !hasOthers(cell)) return;
+  if (!canEdit() || !current.me.alive || !hasOthers(cell)) return;
   const box = document.createElement('div');
   box.className = 'cell-actions';
   const add = (label: string, onClick: () => void, className = 'btn') => {
@@ -660,12 +703,30 @@ function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellVie
       tryAdd({ type: 'whisper', ...spot });
     });
   }
-  const note = document.createElement('p');
-  note.className = 'muted';
-  note.textContent = isProtected(current)
-    ? '最初の2日間は攻撃できない'
-    : '相手が動いても、残りAPで届くなら追いかける。届かなければ不発でAP−1';
-  box.append(note);
+  // 9.1 動物と漂流者
+  for (const npc of cell.npcs) {
+    if (npc.kind === 'castaway') {
+      if (!npc.following && here.x === cell.x && here.y === cell.y) {
+        add(`漂流者を手当てする（AP${AID_AP}）`, () => {
+          inspected = null;
+          tryAdd({ type: 'aid', npcId: npc.id });
+        }, 'btn btn-primary');
+      }
+    } else {
+      add(`${NPC_NAMES[npc.kind]}を狩る（AP${HUNT_AP}）`, () => {
+        inspected = null;
+        tryAdd({ type: 'hunt', npcId: npc.id });
+      }, 'btn btn-danger');
+    }
+  }
+  if (targets.length > 0) {
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = isProtected(current)
+      ? '最初の2日間は攻撃できない'
+      : '相手が動いても、残りAPで届くなら追いかける。届かなければ不発でAP−1';
+    box.append(note);
+  }
 
   const from = projectPlan(current, plan);
   const direction = (Object.keys(DELTA) as Direction[]).find(
@@ -680,45 +741,81 @@ function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellVie
   info.append(box);
 }
 
+const SIDES: [Direction, number, number][] = [['up', 0, -1], ['down', 0, 1], ['left', -1, 0], ['right', 1, 0]];
+const layer = (src: string, className = '') => `<img src="${src}" alt="" class="${className}">`;
+
+/** マスの絵を重ねる。下から地形→波打ちぎわ→建物→人の順 */
+function cellLayers(cell: CellView, current: PlayerView, showPlanned: boolean): string {
+  if (!cell.terrain) return layer(fogUrl(cell.x, cell.y));
+  const parts = [layer(terrainUrl(cell.terrain, cell.x, cell.y))];
+  if (cell.terrain === 'sea') parts.push(layer(waveUrl(cell.x, cell.y), 'wave'));
+  else {
+    for (const [side, dx, dy] of SIDES) {
+      const next = current.cells[(cell.y + dy) * current.width + cell.x + dx];
+      if (next?.x === cell.x + dx && next.terrain === 'sea') parts.push(layer(shoreUrl(side)));
+    }
+  }
+  if (cell.footprint) parts.push(layer(footprintUrl()));
+  if (cell.relic) parts.push(layer(relicUrl()));
+  if (cell.structure) parts.push(layer(structureUrl(cell.structure)));
+  for (const mark of current.marks) {
+    if (mark.x === cell.x && mark.y === cell.y) parts.push(layer(markUrl(mark.kind)));
+  }
+  for (const npc of cell.npcs) parts.push(layer(npcUrl(npc.kind), 'npc'));
+  // 名前は自由入力なので HTML に混ぜず、席番号だけを描く
+  for (const figure of cell.figures) {
+    if (figure.kind === 'shadow') {
+      parts.push(layer(shadowUrl(), 'piece'));
+      continue;
+    }
+    const job = current.roster.find((p) => p.id === figure.id)?.job ?? null;
+    parts.push(layer(personUrl(job, figure.id), 'piece'));
+    if (figure.kind === 'self') parts.push(layer(arrowUrl(), 'self-arrow'));
+    parts.push(`<span class="seat-tag p${figure.id}">${figure.id + 1}</span>`);
+  }
+  if (isGhost(current) && current.me.x === cell.x && current.me.y === cell.y) parts.push(layer(ghostUrl(), 'piece'));
+  if (showPlanned) {
+    const job = current.roster.find((p) => p.id === current.me.id)?.job ?? null;
+    parts.push(layer(personUrl(job, current.me.id), 'piece plan-ghost'));
+  }
+  if (current.whisperSeen.some((p) => p.x === cell.x && p.y === cell.y)) parts.push(layer(bubbleUrl()));
+  return parts.join('');
+}
+
 function renderCell(button: HTMLButtonElement, cell: CellView, current: PlayerView) {
-  const editing = canEdit();
+  const editing = canEdit() && current.me.alive;
   const from = projectPlan(current, plan);
   const distance = Math.abs(cell.x - from.x) + Math.abs(cell.y - from.y);
   const cost = cell.terrain ? TERRAIN[cell.terrain].moveCost : 1;
   const canTarget = editing && distance === 1 && cost !== null;
   const onPath = planPath(current).some((p) => p.x === cell.x && p.y === cell.y);
-  const isGhost = plan.some((a) => a.type === 'move') && from.x === cell.x && from.y === cell.y;
+  const planned = current.me.alive && plan.some((a) => a.type === 'move') && from.x === cell.x && from.y === cell.y;
 
   const classes = ['tile', `fog-${cell.fog}`];
   if (cell.terrain) classes.push(`t-${cell.terrain}`);
   if (canTarget) classes.push('reachable');
   if (canTarget && cost !== null && cost > from.ap) classes.push('too-far');
   if (onPath) classes.push('path');
-  if (editing && !isProtected(current) && hasOthers(cell)) classes.push('can-attack');
-  if (current.whisperSeen.some((p) => p.x === cell.x && p.y === cell.y)) classes.push('whisper-seen');
+  if (editing && !isProtected(current) && cell.figures.some((f) => f.kind !== 'self')) classes.push('can-attack');
+  if (isGhost(current) && plan.some((a) => a.type === 'haunt' && a.x === cell.x && a.y === cell.y)) classes.push('ghost-target');
   if (inspected?.x === cell.x && inspected.y === cell.y) classes.push('inspected');
   button.className = classes.join(' ');
 
-  // 名前は自由入力なので HTML に混ぜず、席番号だけを描く
-  const pieces = cell.figures
-    .map((figure) => {
-      if (figure.kind === 'shadow') return '<span class="piece shadow" aria-label="人影"></span>';
-      const self = figure.kind === 'self' ? ' self' : '';
-      return `<span class="piece p${figure.id}${self}">${figure.id + 1}</span>`;
-    })
-    .join('');
-  const ghost = isGhost ? `<span class="piece ghost p${current.me.id}">${current.me.id + 1}</span>` : '';
-  const label = cell.terrain && cell.terrain !== 'sea' ? `<span class="glyph">${GLYPH[cell.terrain]}</span>` : '';
   const badge = canTarget ? `<span class="cost">${cell.terrain ? cost : '?'}</span>` : '';
   const worn = cell.depletion ? `<span class="worn" data-level="${cell.depletion}"></span>` : '';
-  const relic = cell.relic ? '<span class="relic" aria-label="遺品">✝</span>' : '';
-  const structure = cell.structure
-    ? `<span class="structure" aria-label="${STRUCTURE_NAMES[cell.structure]}">${STRUCTURE_GLYPH[cell.structure]}</span>`
-    : '';
-  const mark = current.marks.find((m) => m.x === cell.x && m.y === cell.y);
-  const markHtml = mark ? `<span class="mark">${mark.kind === 'smoke' ? '煙' : '船'}</span>` : '';
-  button.innerHTML = `${label}${worn}${relic}${structure}${markHtml}${pieces}${ghost}${badge}`;
-  button.setAttribute('aria-label', cell.terrain ? TERRAIN[cell.terrain].name : '未探索');
+  const html = `${cellLayers(cell, current, planned)}${worn}${badge}`;
+  // 同じ絵を張り直すとちらつくので、変わったマスだけ書き換える
+  if (cellHtml.get(button) !== html) {
+    cellHtml.set(button, html);
+    button.innerHTML = html;
+  }
+  const notes = [
+    cell.terrain ? TERRAIN[cell.terrain].name : '未探索',
+    cell.structure ? STRUCTURE_NAMES[cell.structure] : '',
+    ...cell.npcs.map((n) => NPC_NAMES[n.kind]),
+    cell.figures.length > 0 ? `${cell.figures.length}人` : '',
+  ].filter(Boolean);
+  button.setAttribute('aria-label', notes.join('、'));
 }
 
 /** 4.3 鷹の目：好きなマスを見る */
@@ -761,6 +858,24 @@ function renderInfo(current: PlayerView) {
   if (cell.structure) {
     const note = document.createElement('p');
     note.textContent = STRUCTURE_NOTES[cell.structure];
+    info.append(note);
+  }
+  for (const npc of cell.npcs) {
+    const note = document.createElement('p');
+    note.textContent = npc.kind === 'castaway' && npc.following ? '漂流者が一緒にいる（採取しやすい）' : `${NPC_NAMES[npc.kind]}がいる`;
+    info.append(note);
+  }
+  if (cell.footprint) {
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = '足跡が残っている。何かが通ったようだ';
+    info.append(note);
+  }
+  const mark = current.marks.find((m) => m.x === cell.x && m.y === cell.y);
+  if (mark) {
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.textContent = MARK_NOTES[mark.kind];
     info.append(note);
   }
   appendScout(info, current, cell);
@@ -953,6 +1068,49 @@ function renderSpecial(current: PlayerView) {
   );
 }
 
+/** 8.5 幽霊にできること。マスを選んでから怪異を置く */
+function renderGhost(current: PlayerView) {
+  const card = $('ghost-card');
+  const body = $('ghost-body');
+  const active = isGhost(current);
+  card.hidden = !active;
+  if (!active) return;
+  const ghost = current.ghost!;
+  const items: HTMLElement[] = [];
+  const editing = canEdit();
+  const can = (action: PlanAction) => editing && projectPlan(current, [...plan, action]).ok;
+  const button = (label: string, icon: string, action: PlanAction) => {
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.className = 'btn btn-small';
+    element.append(spriteImg(iconUrl(icon)), document.createTextNode(label));
+    element.disabled = !can(action);
+    element.addEventListener('click', () => tryAdd(action));
+    return element;
+  };
+  const note = document.createElement('p');
+  note.className = 'muted';
+  const target = inspected;
+  note.textContent = !ghost.hauntReady
+    ? '今日の怪異はもう使った'
+    : target
+      ? `選んだマス（${target.x + 1}, ${target.y + 1}）に怪異を起こせる`
+      : 'マップのマスをタップして、怪異を起こす場所を選ぶ';
+  items.push(note);
+  if (target) {
+    const grid = document.createElement('div');
+    grid.className = 'ghost-buttons';
+    for (const kind of Object.keys(HAUNT_NAMES) as HauntKind[]) {
+      const element = button(HAUNT_NAMES[kind], kind, { type: 'haunt', kind, x: target.x, y: target.y });
+      element.title = HAUNT_NOTES[kind];
+      grid.append(element);
+    }
+    items.push(grid);
+  }
+  if (ghost.curseReady) items.push(button('自分を倒した相手に祟る', 'curse', { type: 'curse' }));
+  body.replaceChildren(...items);
+}
+
 function renderRecipes(current: PlayerView) {
   const editing = canEdit();
   const myJob = current.roster.find((p) => p.id === current.me.id)?.job ?? null;
@@ -965,6 +1123,7 @@ function renderRecipes(current: PlayerView) {
     ...available.map((id) => {
       const recipe = RECIPES[id];
       const row = document.createElement('li');
+      const art = spriteImg(recipe.builds ? structureUrl(recipe.builds) : itemUrl(recipe.output!.item));
       const info = document.createElement('div');
       info.className = 'recipe-info';
       const name = document.createElement('b');
@@ -979,7 +1138,7 @@ function renderRecipes(current: PlayerView) {
       button.textContent = recipe.builds ? '建てる' : '作る';
       button.disabled = !editing || !projectPlan(current, [...plan, { type: 'craft', recipe: id }]).ok;
       button.addEventListener('click', () => tryAdd({ type: 'craft', recipe: id }));
-      row.append(info, button);
+      row.append(art, info, button);
       return row;
     }),
   );
@@ -995,7 +1154,7 @@ function renderVitals(current: PlayerView) {
   };
   setValue('hunger-value', current.me.hunger);
   setValue('water-value', current.me.water);
-  const tags = [
+  const tags = !current.me.alive ? [] : [
     current.me.bleeding ? '出血' : '',
     current.me.poisoned ? '中毒' : '',
     current.me.tired ? '疲労' : '',
@@ -1017,7 +1176,7 @@ function renderMoreActions(current: PlayerView) {
   const can = (action: PlanAction) => editing && projectPlan(current, [...plan, action]).ok;
   const setup = (id: string, label: string, action: PlanAction) => {
     const button = $<HTMLButtonElement>(id);
-    button.textContent = label;
+    button.querySelector('span')!.textContent = label;
     button.disabled = !can(action);
   };
   const ap = projectPlan(current, plan).ap;
@@ -1034,11 +1193,10 @@ function renderOrder() {
     ...current.initiative.map(({ playerId, value }) => {
       const row = document.createElement('li');
       if (playerId === actingId) row.className = 'acting';
-      const dot = document.createElement('span');
-      dot.className = `dot p${playerId}`;
+      const person = current.roster.find((p) => p.id === playerId);
+      const portrait = person && !person.alive ? spriteImg(ghostUrl(), 'sprite sprite-person') : seatSprite(playerId, person?.job ?? null);
       const name = document.createElement('span');
       name.className = 'order-name';
-      const person = current.roster.find((p) => p.id === playerId);
       const public_ = [
         person?.job ? JOBS[person.job].name : '',
         person?.publicTrait ? TRAITS[person.publicTrait].name : '',
@@ -1057,7 +1215,7 @@ function renderOrder() {
         state.className = 'tag tag-ready';
         state.textContent = '確定';
       }
-      row.append(dot, name, score, state);
+      row.append(portrait, name, score, state);
       return row;
     }),
   );
@@ -1075,7 +1233,9 @@ function renderPlan(current: PlayerView) {
     const empty = document.createElement('li');
     empty.className = 'muted';
     empty.textContent = !current.me.alive
-      ? '脱落したので観戦中'
+      ? current.ghost
+        ? '好きなマスをタップして怪異を選ぶ'
+        : '脱落したので観戦中'
       : planning
         ? '隣のマスをタップして移動を予約'
         : '結果を見ています…';
@@ -1105,10 +1265,18 @@ function render(centerOnPlayer: boolean) {
   current.cells.forEach((cell, i) => renderCell(cellButtons[i], cell, current));
 
   const projection = projectPlan(current, plan);
-  $('phase-icon').textContent = current.phase === 'day' ? '☀' : '☾';
+  $<HTMLImageElement>('phase-icon').src = iconUrl(current.phase === 'day' ? 'sun' : 'moon');
+  document.body.dataset.weather = current.worldActive ? current.weather : 'sunny';
+  $('weather-icon').hidden = !current.worldActive;
+  $('weather-label').hidden = !current.worldActive;
+  if (current.worldActive) {
+    $<HTMLImageElement>('weather-icon').src = weatherIcon(current.weather);
+    $('weather-label').textContent = WEATHER_NAMES[current.weather];
+  }
+  $('final-banner').hidden = !current.finalPhase;
   $('day-label').textContent = `${current.day}日目 ${current.phase === 'day' ? '昼' : '夜'}`;
   $('turn-label').textContent = `ターン ${current.turn}`;
-  $('hp-value').textContent = current.me.alive ? `${current.me.hp}` : '脱落';
+  $('hp-value').textContent = current.me.alive ? `${current.me.hp}` : current.ghost ? '幽霊' : '脱落';
   $('ap-pips').innerHTML = Array.from(
     { length: AP_DISPLAY },
     (_, i) => `<i class="${i < projection.ap ? 'on' : ''}"></i>`,
@@ -1118,6 +1286,7 @@ function render(centerOnPlayer: boolean) {
   renderVitals(current);
   renderRole(current);
   renderSpecial(current);
+  renderGhost(current);
   renderOrder();
   renderPlan(current);
   renderInfo(current);
@@ -1126,11 +1295,11 @@ function render(centerOnPlayer: boolean) {
   renderRecipes(current);
 
   const editing = canEdit();
-  $<HTMLButtonElement>('gather').disabled = !editing || projection.ap < GATHER_AP;
+  $<HTMLButtonElement>('gather').disabled = !editing || !current.me.alive || projection.ap < GATHER_AP;
   $<HTMLButtonElement>('undo').disabled = !editing || plan.length === 0;
   const confirm = $<HTMLButtonElement>('confirm');
-  confirm.disabled = !planning || !current.me.alive;
-  confirm.textContent = !planning ? '解決中…' : ready ? '予約を修正する' : '予約を確定';
+  confirm.disabled = !planning || (!current.me.alive && !current.ghost);
+  $('confirm-label').textContent = !planning ? '解決中…' : ready ? '予約を修正する' : '予約を確定';
   confirm.classList.toggle('btn-primary', planning && !ready);
 
   renderInventory(current);
@@ -1154,6 +1323,7 @@ function renderInventory(current: PlayerView) {
     ...current.me.inventory.map((stack) => {
       const row = document.createElement('li');
       const name = document.createElement('span');
+      name.className = 'item-name';
       name.textContent = ITEMS[stack.item].name;
       const count = document.createElement('span');
       const left = stack.count - planned(stack.item);
@@ -1166,7 +1336,7 @@ function renderInventory(current: PlayerView) {
       drop.disabled = !canEdit() || left <= 0;
       drop.setAttribute('aria-label', `${ITEMS[stack.item].name}を1つ捨てる`);
       drop.addEventListener('click', () => tryAdd({ type: 'discard', item: stack.item }));
-      row.append(name, count);
+      row.append(spriteImg(itemUrl(stack.item)), name, count);
       const effect = ITEMS[stack.item].use;
       if (effect) {
         const use = document.createElement('button');
@@ -1274,6 +1444,7 @@ $('create-form').addEventListener('submit', (event) => {
       players: Number($<HTMLSelectElement>('setup-players').value),
       mapSize: $<HTMLSelectElement>('setup-size').value as MapSize,
       planSeconds: Number($<HTMLSelectElement>('setup-plan').value),
+      cpuLevel: ($<HTMLSelectElement>('setup-cpu').value || null) as CpuLevel | null,
       ...(seed ? { seed } : {}),
     },
   });
@@ -1330,7 +1501,7 @@ function undo() {
 }
 
 function toggleReady() {
-  if (!planning || !view?.me.alive) return;
+  if (!planning || !view || (!view.me.alive && !view.ghost)) return;
   ready = !ready;
   sendPlan();
   render(false);
@@ -1365,6 +1536,23 @@ setInterval(() => {
 new ResizeObserver(() => {
   if (view && !$('screen-game').hidden) centerMap(view, 'auto');
 }).observe($('map-scroll'));
+
+// ―― 絵の準備 ――
+document.querySelectorAll<HTMLImageElement>('img[data-icon]').forEach((img) => {
+  img.src = iconUrl(img.dataset.icon!);
+});
+$('weather-layer').style.backgroundImage = `url(${rainUrl()})`;
+
+// 2コマのアニメーションはすべてこの拍子に合わせる
+const FRAME_MS = 600;
+let frame = 0;
+document.body.dataset.frame = '0';
+if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  setInterval(() => {
+    frame = 1 - frame;
+    document.body.dataset.frame = String(frame);
+  }, FRAME_MS);
+}
 
 watchSlowConnect();
 try {

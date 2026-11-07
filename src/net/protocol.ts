@@ -1,5 +1,6 @@
 // サーバーと画面のあいだで送るメッセージ。
 import type {
+  CpuLevel,
   DraftView,
   GameEvent,
   GoalLine,
@@ -18,6 +19,8 @@ export interface RoomSetup {
   mapSize: MapSize;
   /** 計画フェーズの制限時間 */
   planSeconds: number;
+  /** 空いた席をCPUで埋めるときの強さ。null なら埋めない */
+  cpuLevel?: CpuLevel | null;
   /** 空ならサーバーが決めて、リザルトまで伏せる */
   seed?: string;
 }
@@ -113,6 +116,7 @@ export type ServerMessage =
         publicTrait: TraitId | null;
         secretTrait: TraitId | null;
         goals: GoalLine[];
+        cpu: boolean;
       }[];
     }
   | { t: 'left' }

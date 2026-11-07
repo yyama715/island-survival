@@ -59,7 +59,34 @@ export type ItemId =
   | 'matches'
   | 'survival_knife'
   | 'backpack'
-  | 'full_course';
+  | 'full_course'
+  | 'meat';
+
+export type Weather = 'sunny' | 'rain' | 'storm';
+export type NpcKind = 'critter' | 'monkey' | 'boar' | 'herd' | 'castaway';
+export type HauntKind = 'fog' | 'noise' | 'lure' | 'bless';
+
+/** 9.1 動物と漂流者 */
+export interface Npc {
+  id: number;
+  kind: NpcKind;
+  x: number;
+  y: number;
+  hp: number;
+  /** 大イノシシの縄張りの中心 */
+  homeX?: number;
+  homeY?: number;
+  /** 群れの進む向き */
+  dx?: number;
+  dy?: number;
+  /** 猿が盗んだ物 */
+  carried?: ItemStack | null;
+  /** 助けてくれた人についていく */
+  followerOf?: number | null;
+  followTurns?: number;
+  /** 逃げた猛獣が戻るターン */
+  fledUntil?: number;
+}
 
 export type JobId = 'fisher' | 'carpenter' | 'doctor' | 'soldier' | 'explorer' | 'cook';
 
@@ -275,6 +302,18 @@ export interface PlayerState {
   radioFixed: boolean;
   /** 医師に初めて治療してもらったか */
   treatedOnce: boolean;
+  /** 自分を脱落させた相手（幽霊の祟りの相手） */
+  killerId: number | null;
+  /** 幽霊の怪異を起こした日（最終局面ではターン） */
+  hauntedOn: number;
+  curseUsed: boolean;
+  /** 幽霊の勝者予想 */
+  /** 祟られているターン */
+  cursedTurn: number;
+  /** ターンの始まりのHP（全員が同時に倒れたときの判定用） */
+  hpAtTurnStart: number;
+  /** 泳ぎ上手が海で耐えたターン */
+  swamTurn: number;
 }
 
 /** 8.1 行動値の内訳は公開情報 */
@@ -299,6 +338,26 @@ export interface GameState {
   scouts: { playerId: number; cells: number[]; untilTurn: number }[];
   /** 「勝利目前」を知らせ済みのプレイヤー */
   nearNotified: number[];
+  /** 天候・イベント・動物・最終局面を動かすか（本番は true） */
+  world: boolean;
+  weather: Weather;
+  npcs: Npc[];
+  nextNpcId: number;
+  /** 動物の足跡 */
+  footprints: { cell: number; untilTurn: number }[];
+  /** 次に沈むマス（公開） */
+  sinkNext: number[];
+  /** 沈んだマス */
+  sunk: number[];
+  finalPhase: boolean;
+  /** 幽霊の濃霧 */
+  fog: { cells: number[]; untilTurn: number }[];
+  /** 幽霊の守護 */
+  blessed: { cells: number[]; untilTurn: number }[];
+  /** 漂着物資の場所（公開） */
+  supply: Point | null;
+  /** 小動物が復活するターン */
+  critterRespawns: number[];
   map: GameMap;
   /** マスごとの枯渇度 */
   depletion: number[];
@@ -353,9 +412,22 @@ export type PlanAction =
   /** 鷹の目。好きなマスとその周りを見る */
   | { type: 'scout'; x: number; y: number }
   /** 偽の知らせ */
-  | { type: 'falseAlarm' };
+  | { type: 'falseAlarm' }
+  /** 動物を狩る */
+  | { type: 'hunt'; npcId: number }
+  /** 漂流者を手当てする */
+  | { type: 'aid'; npcId: number }
+  /** 8.5 幽霊の怪異 */
+  | { type: 'haunt'; kind: HauntKind; x: number; y: number }
+  /** 8.5 幽霊の祟り */
+  | { type: 'curse' }
+  /** 8.5 幽霊の勝者予想 */;
 
 export type Action =
+  | { type: 'hunt'; playerId: number; npcId: number }
+  | { type: 'aid'; playerId: number; npcId: number }
+  | { type: 'haunt'; playerId: number; kind: HauntKind; x: number; y: number }
+  | { type: 'curse'; playerId: number }
   | { type: 'heal'; playerId: number; targetId: number }
   | { type: 'explore'; playerId: number }
   | { type: 'repair'; playerId: number }
@@ -473,6 +545,25 @@ export type GameEvent =
   | { type: 'shipLeft' }
   | { type: 'playerRevived'; playerId: number }
   | { type: 'victory'; playerId: number; reason: VictoryReason }
+  | { type: 'weatherChanged'; weather: Weather }
+  | { type: 'supplyDropped'; x: number; y: number }
+  | { type: 'quake' }
+  | { type: 'herdAppeared' }
+  | { type: 'boarAppeared' }
+  | { type: 'castawayAppeared'; x: number; y: number }
+  | { type: 'tideNotice'; x: number; y: number }
+  | { type: 'tideRose' }
+  | { type: 'finalStarted' }
+  | { type: 'finalSunk'; cells: number }
+  /** ここから下は本人にだけ */
+  | { type: 'weatherHit'; playerId: number; damage: number; water: number }
+  | { type: 'npcHit'; playerId: number; kind: NpcKind; damage: number }
+  | { type: 'monkeyStole'; playerId: number; item: ItemId }
+  | { type: 'hunted'; playerId: number; kind: NpcKind; killed: boolean; hit: boolean; gained: ItemStack[]; lost: ItemStack[] }
+  | { type: 'aided'; playerId: number; gained: ItemStack[]; lost: ItemStack[] }
+  | { type: 'drowned'; playerId: number }
+  | { type: 'haunted'; playerId: number; kind: HauntKind }
+  | { type: 'cursed'; playerId: number }
   | { type: 'rested'; playerId: number; healed: number }
   | { type: 'crafted'; playerId: number; recipe: RecipeId; gained: ItemStack[]; lost: ItemStack[] }
   | { type: 'guarded'; playerId: number }
