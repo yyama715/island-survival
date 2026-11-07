@@ -1,0 +1,27 @@
+{
+  "name": "island-survival",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "node --watch --import tsx src/server/main.ts",
+    "build": "npm run typecheck && vite build",
+    "start": "node --import tsx src/server/main.ts --prod",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.core.json && tsc --noEmit -p tsconfig.server.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "tsx": "^4.23.15",
+    "ws": "^8.22.1"
+  }
+}

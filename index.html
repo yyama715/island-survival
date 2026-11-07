@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1620" />
+    <title>無人島サバイバル 試作</title>
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <div id="connection-banner" class="banner">サーバーに接続しています…</div>
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <section id="screen-home" class="screen center" hidden>
+      <div class="panel-narrow">
+        <h1>無人島サバイバル</h1>
+        <p class="muted">協力したいけど、信用しきれない。</p>
+
+        <label class="field">あなたの名前
+          <input id="name" maxlength="12" autocomplete="nickname" placeholder="12文字まで" />
+        </label>
+
+        <div class="card stack">
+          <h2>友だちのルームに入る</h2>
+          <form id="join-form" class="inline-form">
+            <input id="join-code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="合言葉（4文字）" aria-label="合言葉" />
+            <button class="btn btn-primary" type="submit">入る</button>
+          </form>
+        </div>
+
+        <form id="create-form" class="card stack">
+          <h2>ルームを作る</h2>
+          <label class="field-row">人数（島の大きさの基準）
+            <select id="setup-players">
+              <option value="3">3人</option>
+              <option value="4">4人</option>
+              <option value="5">5人</option>
+            </select>
+          </label>
+          <label class="field-row">マップの広さ
+            <select id="setup-size">
+              <option value="small">小</option>
+              <option value="medium">中</option>
+              <option value="large">大</option>
+            </select>
+          </label>
+          <label class="field-row">ターンの長さ
+            <select id="setup-plan">
+              <option value="60">60秒</option>
+              <option value="120">120秒</option>
+            </select>
+          </label>
+          <label class="field-row">シード値（任意）
+            <input id="setup-seed" maxlength="32" autocomplete="off" spellcheck="false" placeholder="空ならランダム" />
+          </label>
+          <button class="btn btn-primary" type="submit">ルームを作る</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="screen-lobby" class="screen center" hidden>
+      <div class="panel-narrow">
+        <h1>ルーム</h1>
+        <div class="card stack">
+          <p class="muted">合言葉</p>
+          <p id="lobby-code" class="room-code"></p>
+          <button id="copy-invite" class="btn" type="button">招待URLをコピー</button>
+          <p id="invite-url" class="muted wrap"></p>
+        </div>
+        <div class="card stack">
+          <h2>参加者 <span id="lobby-count" class="muted"></span></h2>
+          <ul id="lobby-members" class="members"></ul>
+          <p id="lobby-rules" class="muted"></p>
+        </div>
+        <button id="start-game" class="btn btn-primary" type="button">ゲームを始める</button>
+        <p id="lobby-wait" class="muted center-text" hidden>ルームを作った人の開始を待っています…</p>
+        <button id="leave-room" class="btn btn-quiet" type="button">ルームを出る</button>
+      </div>
+    </section>
+
+    <section id="screen-result" class="screen center" hidden>
+      <div class="panel-narrow center-text">
+        <h1 id="result-title"></h1>
+        <div class="card stack">
+          <p class="muted">この島のシード値</p>
+          <p id="result-seed" class="room-code small"></p>
+        </div>
+        <button id="back-to-lobby" class="btn btn-primary" type="button">ルームに戻る</button>
+        <p id="result-wait" class="muted" hidden>ルームを作った人の操作を待っています…</p>
+        <button id="leave-result" class="btn btn-quiet" type="button">ルームを出る</button>
+      </div>
+    </section>
+
+    <div id="screen-game" class="game" hidden>
+      <header class="hud">
+        <div class="hud-time">
+          <span id="phase-icon" aria-hidden="true"></span>
+          <strong id="day-label"></strong>
+          <span id="turn-label" class="muted"></span>
+        </div>
+        <div id="timer" class="timer" role="timer"></div>
+        <div class="hud-stats">
+          <div class="stat">
+            <span class="stat-name">AP</span>
+            <span id="ap-pips" class="pips"></span>
+          </div>
+          <div class="stat">
+            <span class="stat-name">HP</span>
+            <strong id="hp-value"></strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="board">
+        <div id="map-scroll" class="map-scroll">
+          <div id="map" class="map" role="grid" aria-label="島のマップ"></div>
+        </div>
+      </main>
+
+      <aside class="side">
+        <section class="actions">
+          <button id="gather" class="btn" type="button">採取（AP1）</button>
+          <button id="undo" class="btn" type="button">1つ戻す</button>
+          <button id="confirm" class="btn btn-primary" type="button">予約を確定</button>
+        </section>
+
+        <section class="card">
+          <h2>予約 <span id="plan-note" class="muted"></span></h2>
+          <ol id="plan-list" class="plan-list"></ol>
+        </section>
+
+        <section class="card">
+          <h2>行動順</h2>
+          <ol id="order" class="order"></ol>
+        </section>
+
+        <section class="card" id="info" aria-live="polite"></section>
+
+        <section class="card">
+          <h2>所持品 <span id="slot-count" class="muted"></span></h2>
+          <ul id="inventory" class="inventory"></ul>
+        </section>
+
+        <section class="card">
+          <h2>できごと</h2>
+          <ol id="log" class="log"></ol>
+        </section>
+      </aside>
+    </div>
+
+    <script type="module" src="/src/ui/main.ts"></script>
+  </body>
+</html>

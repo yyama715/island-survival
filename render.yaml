@@ -1,0 +1,16 @@
+# Render の無料プランで公開するための設定。手順は docs/deploy.md
+services:
+  - type: web
+    name: island-survival
+    runtime: node
+    plan: free
+    # 画面のビルドには開発用パッケージも要る
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    numInstances: 1
+    envVars:
+      - key: TRUST_PROXY
+        value: "1"
+      - key: NODE_VERSION
+        value: "24"

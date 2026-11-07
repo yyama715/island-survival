@@ -1,0 +1,74 @@
+// サーバーと画面のあいだで送るメッセージ。
+import type { MapSize, PlanAction, PlayerView, ReplayStep } from '../core/index';
+
+export interface RoomSetup {
+  players: number;
+  mapSize: MapSize;
+  /** 計画フェーズの制限時間 */
+  planSeconds: number;
+  /** 空ならサーバーが決めて、リザルトまで伏せる */
+  seed?: string;
+}
+
+export type ClientMessage =
+  | { t: 'create'; name: string; setup: RoomSetup }
+  | { t: 'join'; code: string; name: string }
+  | { t: 'resume'; token: string }
+  | { t: 'start' }
+  | { t: 'plan'; actions: PlanAction[]; ready: boolean }
+  | { t: 'backToLobby' }
+  | { t: 'leave' }
+  /** 接続中はホスティング先にサーバーを眠らせないための合図。返事はない */
+  | { t: 'keepAlive' };
+
+export interface MemberInfo {
+  id: number;
+  name: string;
+  connected: boolean;
+}
+
+export interface PlanStatus {
+  id: number;
+  ready: boolean;
+  connected: boolean;
+}
+
+export type ErrorCode =
+  | 'noRoom'
+  | 'roomFull'
+  | 'alreadyStarted'
+  | 'notHost'
+  | 'badPlan'
+  | 'badMessage'
+  | 'tooManyRooms'
+  | 'tooManyRequests';
+
+export type ServerMessage =
+  /** ルームに入れた。token を保存しておくと再接続で復帰できる */
+  | { t: 'joined'; code: string; token: string; memberId: number }
+  | {
+      t: 'lobby';
+      code: string;
+      hostId: number;
+      youId: number;
+      setup: RoomSetup;
+      members: MemberInfo[];
+      inviteUrl: string;
+    }
+  /** 計画フェーズの開始（再接続時も同じものを送る） */
+  | {
+      t: 'planning';
+      view: PlayerView;
+      remainingMs: number;
+      plan: PlanAction[];
+      ready: boolean;
+      status: PlanStatus[];
+    }
+  | { t: 'status'; status: PlanStatus[] }
+  /** 解決フェーズの再生。全員の再生が終わる頃に次のメッセージが届く */
+  | { t: 'replay'; steps: ReplayStep[]; stepMs: number }
+  /** 解決の再生中に再接続した人へ、盤面だけ渡す */
+  | { t: 'waiting'; view: PlayerView; status: PlanStatus[] }
+  | { t: 'result'; winnerId: number | null; winnerName: string | null; seed: string; hostId: number; youAreHost: boolean }
+  | { t: 'left' }
+  | { t: 'error'; code: ErrorCode; message: string };
