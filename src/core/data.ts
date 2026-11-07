@@ -1,4 +1,4 @@
-// 調整する数値はここに集める。章番号は docs/island-survival-spec.md のもの。
+﻿// 調整する数値はここに集める。章番号は docs/island-survival-spec.md のもの。
 import type { ItemId, ItemStack, JobId, MapSize, RecipeId, SpecialTerrainId, StructureKind, TerrainId } from './types';
 
 export interface MapConfig {
@@ -39,7 +39,8 @@ export const MAX_MAP_ATTEMPTS = 200;
 
 // 5章 ステータス
 export const INITIAL_HP = 10;
-export const AP_PER_TURN = 3;
+/** シミュレータが書き換えて比べられるように、調整値はオブジェクトに入れる */
+export const BALANCE = { apPerTurn: 4 };
 export const INVENTORY_SLOTS = 8;
 export const STACK_SIZE = 5;
 export const INITIAL_HUNGER = 8;
@@ -121,9 +122,12 @@ export const FOLLOWER_GATHER = 10;
 export const FINAL = {
   /** 11日目の朝 */
   startTurn: 21,
-  stormDamage: 1,
+  /** 外側の1周が沈む間隔（ターン） */
+  sinkEveryTurns: 2,
+  /** 最終局面は嵐の削りではなく、狭くなる島での戦いで決める */
+  stormDamage: 0,
   buildingDamage: 3,
-  attackBonus: 1,
+  attackBonus: 2,
   gatherPenalty: 0.5,
   hutHp: 6,
 };
@@ -165,9 +169,9 @@ const need = (...pairs: [ItemId, number][]) => pairs.map(([item, count]) => ({ i
 
 // 7.3 クラフトレシピ。いかだは素材を少しずつ運ぶので raftWork で作る
 export const RECIPES: Record<RecipeId, RecipeDef> = {
-  medicine: { name: '薬', ap: 1, inputs: [need(['medicinal_herb', 1], ['water', 1])], output: { item: 'medicine', count: 1 }, job: 'doctor', summary: '使った人のHP+3。誰が使っても医師の治療回数に数える' },
-  fort: { name: '砦', ap: 3, inputs: [need(['wood', 8], ['stone', 4], ['rope', 2])], builds: 'fort', job: 'carpenter', summary: '耐久10。中にいると防御+2。修理できる' },
-  full_course: { name: '島のフルコース', ap: 2, inputs: [[]], output: { item: 'full_course', count: 1 }, job: 'cook', course: true, summary: '6ジャンルの食材を各1つ。食べると特殊勝利' },
+  medicine: { name: '薬', ap: 1, inputs: [need(['medicinal_herb', 1])], output: { item: 'medicine', count: 1 }, job: 'doctor', summary: '使った人のHP+3。誰が使っても医師の治療回数に数える' },
+  fort: { name: '砦', ap: 3, inputs: [need(['wood', 6], ['stone', 3], ['rope', 1])], builds: 'fort', job: 'carpenter', summary: '耐久10。中にいると防御+2。修理できる' },
+  full_course: { name: '島のフルコース', ap: 2, inputs: [[]], output: { item: 'full_course', count: 1 }, job: 'cook', course: true, summary: '6ジャンルのうち4ジャンルの食材を各1つ。食べると特殊勝利' },
   smoke: { name: '狼煙', ap: 3, inputs: [need(['wood', 5], ['flint', 1]), need(['wood', 5], ['matches', 1])], builds: 'smoke', onTerrain: 'mountain', summary: '山で上げる（3〜9日目）。3ターン後に救助船が砂浜へ来る' },
   backpack: { name: 'リュック', ap: 2, inputs: [need(['cloth', 3], ['rope', 1])], output: { item: 'backpack', count: 1 }, summary: '所持枠+4' },
   stone_knife: { name: '石のナイフ', ap: 1, inputs: [need(['stone', 1], ['wood', 1])], output: { item: 'stone_knife', count: 1 }, summary: '攻撃 1d3+1' },
@@ -248,7 +252,7 @@ export const MAX_PLAN_ACTIONS = 24;
 // 7.2 運の調整。枯渇度1につき成功率を割合で下げ、夜も同様に下げる（数値は初期案）
 export const DEPLETION = {
   max: 3,
-  penaltyPerLevel: 0.2,
+  penaltyPerLevel: 0.1,
   /** このターン数ごとに全マスの枯渇度が1回復する */
   recoverEveryTurns: 2,
 };

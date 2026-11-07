@@ -19,7 +19,7 @@ import {
   REPAIR_AP,
   SOLDIER,
   TENACITY_HP,
-  AP_PER_TURN,
+  BALANCE,
   ATTACK_AP,
   BLEED_CONTINUE_CHANCE,
   BOTTLE,
@@ -284,7 +284,7 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     x: start.x,
     y: start.y,
     hp: INITIAL_HP,
-    ap: AP_PER_TURN,
+    ap: BALANCE.apPerTurn,
     alive: true,
     inventory: [],
     memory: new Array(cellCount).fill(null),
@@ -1282,7 +1282,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       }
       player.tired = player.fatiguedNext;
       player.fatiguedNext = false;
-      player.ap = AP_PER_TURN - (isWeak(player) ? 1 : 0) - (player.tired ? 1 : 0);
+      player.ap = BALANCE.apPerTurn - (isWeak(player) ? 1 : 0) - (player.tired ? 1 : 0);
       refreshMemory(state, player);
     }
     // 7.4 救助船。到着の1ターン前に全員へ公開する

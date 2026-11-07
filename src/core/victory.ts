@@ -32,8 +32,9 @@ export function courseIngredients(owned: ReadonlyMap<ItemId, number>): ItemStack
     missing.delete(genre);
     used.push({ item, count: 1 });
   }
-  if (missing.size === 0) return used;
-  if (missing.size <= 2 && (owned.get('island_lord') ?? 0) > 0) {
+  const allowed = FOOD_GENRES.length - GOALS.courseGenres;
+  if (missing.size <= allowed) return used;
+  if (missing.size <= allowed + 2 && (owned.get('island_lord') ?? 0) > 0) {
     used.push({ item: 'island_lord', count: 1 });
     return used;
   }
@@ -143,7 +144,7 @@ export function describeProgress(state: GameState, player: PlayerState): GoalLin
     } else if (role === 'cook') {
       const have = new Set(player.inventory.map((s) => ITEM_GENRE[s.item]).filter(Boolean));
       const held = FOOD_GENRES.filter((g) => have.has(g)).map((g) => GENRE_NAMES[g]);
-      lines.push({ label: '集めた食材', value: `${held.length} / ${FOOD_GENRES.length}（${held.join('、') || 'なし'}）` });
+      lines.push({ label: '集めた食材', value: `${held.length} / ${GOALS.courseGenres}（${held.join('、') || 'なし'}）` });
     }
   }
   return lines;

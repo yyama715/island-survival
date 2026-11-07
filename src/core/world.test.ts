@@ -279,18 +279,21 @@ describe('最終局面', () => {
     expect(view.cells.every((c) => c.fog === 'visible')).toBe(true);
     expect(view.marks.filter((m) => m.kind === 'sink').length).toBeGreaterThan(0);
     const land = state.map.terrain.filter((t) => t !== 'sea').length;
-    const next = applyAction(state, { type: 'endTurn' }).state;
+    // 予告の次のターンはまだ沈まず、その次で沈む（FINAL.sinkEveryTurns）
+    const waiting = applyAction(state, { type: 'endTurn' }).state;
+    expect(waiting.map.terrain.filter((t) => t !== 'sea').length).toBe(land);
+    const next = applyAction(waiting, { type: 'endTurn' }).state;
     expect(next.map.terrain.filter((t) => t !== 'sea').length).toBeLessThan(land);
     state.players[0].job = 'soldier';
     state.players[0].progress.warPoints = 99;
     expect(resolveTurn(state, {}).state.finished).toBe(false);
   });
 
-  it('全員に毎ターンHP−1。休息で回復せず、隠れられない', () => {
+  it('嵐で削られはしないが、休息で回復せず、隠れられない', () => {
     const state = final();
     state.players[0].hp = 5;
     const next = applyAction(state, { type: 'endTurn' }).state;
-    expect(next.players[0].hp).toBeLessThan(5);
+    expect(next.players[0].hp).toBe(5);
     expect(applyAction(state, { type: 'rest', playerId: 0 }).state.players[0].hp).toBe(5);
     state.map.terrain[cellIndex(state, state.players[0].x, state.players[0].y)] = 'forest';
     expect(applyAction(state, { type: 'hide', playerId: 0 }).events[0]).toMatchObject({ reason: 'cannotHide' });
@@ -314,6 +317,7 @@ describe('最終局面', () => {
     state.players[0].hpAtTurnStart = 1;
     state.players[1].hpAtTurnStart = 1;
     state.players[0].progress.warPoints = 5;
+    for (const player of state.players) state.map.terrain[cellIndex(state, player.x, player.y)] = 'sea';
     const r = resolveTurn(state, {}).state;
     expect(r).toMatchObject({ finished: true, winnerId: 0 });
   });

@@ -26,6 +26,11 @@
 - `npm run build` と `npm start` 本番ビルドの確認
 - `npm test` ルールとルーム管理の自動テスト
 - `npm run typecheck` 型チェック
+- `npm run sim -- --games 3000 --ap 4` CPU同士の自動対戦で勝ち方や職業の勝率を見る（`--set GOALS.warPoints=6` や `--recipe fort=wood:6,stone:3,rope:1` で値を変えて比べられる）
+
+ルールのテストは調整値に引きずられないよう、`src/test-setup.ts` で1ターンのAPを3に戻して動かす。今の調整値は `src/sim/simulate.test.ts` で確かめる。
+
+音は `src/ui/audio.ts` で Web Audio から鳴らす（外部の音源なし）。
 
 複数人の確認は、同じPCならタブを分ければ別の席になる（席の記憶はタブごと）。
 

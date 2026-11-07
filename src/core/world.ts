@@ -169,12 +169,15 @@ export function startOfTurn(state: GameState, rng: Rng, events: GameEvent[]) {
   }
 
   if (state.finalPhase) {
-    if (state.sinkNext.length > 0) {
+    // 沈むのは FINAL.sinkEveryTurns ターンごと。予告は沈む前のターンに出す
+    const sinksNow = (state.turn - FINAL.startTurn) % FINAL.sinkEveryTurns === 0;
+    if (sinksNow && state.sinkNext.length > 0) {
       const cells = state.sinkNext;
       sink(state, cells, false);
       events.push({ type: 'finalSunk', cells: cells.length });
     }
-    state.sinkNext = nextRing(state);
+    const warnsNow = (state.turn + 1 - FINAL.startTurn) % FINAL.sinkEveryTurns === 0;
+    state.sinkNext = warnsNow ? nextRing(state) : sinksNow ? [] : state.sinkNext;
     for (const player of state.players) {
       if (!player.alive || inShelter(state, player)) continue;
       damage(state, player, FINAL.stormDamage, events);

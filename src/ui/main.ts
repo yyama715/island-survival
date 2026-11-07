@@ -5,6 +5,7 @@ import {
   AMBUSH_AP,
   ATTACK_AP,
   CPU_LEVEL_NAMES,
+  BALANCE,
   BOTTLE_ITEM,
   EXPLORE_AP,
   GATHER_AP,
@@ -34,6 +35,7 @@ import {
   WHISPER_AP,
   type CellView,
   type CpuLevel,
+  type GameEvent,
   type Direction,
   type HauntKind,
   type ItemId,
@@ -45,6 +47,7 @@ import {
   type TerrainId,
 } from '../core/index';
 import type { PlanStatus, ServerMessage } from '../net/protocol';
+import { sound, type SeId } from './audio';
 import { Net } from './net';
 import {
   arrowUrl,
@@ -100,7 +103,6 @@ const KEY_DIRECTION: Record<string, Direction> = {
 };
 
 const DELTA: Record<Direction, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-const AP_DISPLAY = 3;
 const URGENT_SECONDS = 10;
 const SLOW_CONNECT_MS = 15_000;
 const ERROR_TOAST_MS = 6000;
@@ -151,7 +153,17 @@ const net = new Net({
   },
 });
 
+let currentScreen: Screen = 'home';
+let headphoneHintShown = false;
+
 function showScreen(screen: Screen) {
+  currentScreen = screen;
+  if (screen === 'lobby') sound.drums = false;
+  if (screen === 'game' && !headphoneHintShown) {
+    headphoneHintShown = true;
+    toast('ヘッドホンでの参加がおすすめです（自分だけの音がボイスチャットに入らないように）', ERROR_TOAST_MS);
+  }
+  updateMusic();
   $('screen-home').hidden = screen !== 'home';
   $('screen-lobby').hidden = screen !== 'lobby';
   $('screen-draft').hidden = screen !== 'draft';
@@ -162,6 +174,155 @@ function showScreen(screen: Screen) {
 /** 席の人物の絵。職業が決まれば帽子が変わる */
 function seatSprite(id: number, job: JobId | null = null): HTMLImageElement {
   return spriteImg(personUrl(job, id), 'sprite sprite-person');
+}
+
+/** 10.4 BGM は公開情報（画面、昼夜、天候、最終局面）だけで決め、本人の状態は重ねる音で伝える */
+function updateMusic() {
+  if (currentScreen === 'home' || currentScreen === 'lobby') sound.play('title');
+  else if (currentScreen === 'draft') sound.play('draft');
+  else if (currentScreen === 'result') sound.play('result');
+  else if (view) {
+    const finalTurns = Math.max(0, view.turn - 21);
+    if (!view.me.alive && view.ghost) sound.play('ghost');
+    else if (view.finalPhase) sound.play('final', finalTurns * 4);
+    else if (view.worldActive && view.weather === 'storm') sound.play('storm');
+    else if (view.phase === 'night') sound.play('night');
+    else sound.play('day', view.day >= 7 ? 12 : 0);
+  }
+  sound.heartbeat = currentScreen === 'game' && !!view?.me.alive && view.me.hp <= 3;
+}
+
+/** 出来事の音。相手の位置が分かる音は左右に振る */
+function eventSound(event: GameEvent, current: PlayerView): [SeId, number] | null {
+  const myId = current.me.id;
+  const panAt = (x: number) => Math.max(-1, Math.min(1, (x - current.me.x) / 4));
+  switch (event.type) {
+    case 'gathered':
+      return [event.pity ? 'gatherRare' : 'gather', 0];
+    case 'gatherNothing':
+      return ['gatherNone', 0];
+    case 'gatherDanger':
+    case 'npcHit':
+      return ['hurt', 0];
+    case 'foundNest':
+    case 'healed':
+    case 'wasHealed':
+    case 'radioFixed':
+    case 'shipCalled':
+      return ['progress', 0];
+    case 'attackResult':
+      if (event.targetId === myId && event.attackerId !== myId) return [event.hit ? 'hurt' : 'miss', 0];
+      return [event.hit ? 'hit' : 'miss', event.attackerId === myId ? 0 : panAt(event.x)];
+    case 'hunted':
+      return [event.hit ? 'hit' : 'miss', 0];
+    case 'combatSeen':
+      return ['hit', panAt(event.x)];
+    case 'trapTriggered':
+    case 'trapSprung':
+      return ['trap', 0];
+    case 'statusDamage':
+      return ['warn', 0];
+    case 'traitRevealed':
+      return ['trait', 0];
+    case 'nearVictory':
+      sound.drums = true;
+      return ['nearVictory', 0];
+    case 'playerEliminated':
+      return ['bell', 0];
+    case 'smokeLit':
+      return ['smoke', 0];
+    case 'shipSoon':
+    case 'shipArrived':
+      return ['horn', 0];
+    case 'lordCaught':
+      return ['lord', 0];
+    case 'fortCompleted':
+      return ['fort', 0];
+    case 'weatherChanged':
+    case 'supplyDropped':
+      return ['weather', 0];
+    case 'tideNotice':
+    case 'tideRose':
+    case 'finalSunk':
+    case 'finalStarted':
+    case 'quake':
+      return ['tide', 0];
+    case 'playerRevived':
+      return ['revive', 0];
+    case 'sighted':
+      return ['step', 0];
+    case 'herdAppeared':
+    case 'boarAppeared':
+      return ['animal', 0];
+    case 'monkeyStole':
+      return ['monkey', 0];
+    case 'haunted':
+      return ['haunt', 0];
+    case 'crafted':
+    case 'raftWorked':
+    case 'repaired':
+      return ['craft', 0];
+    case 'used':
+      return ['eat', 0];
+    case 'victory':
+    case 'gameFinished':
+      return ['victory', 0];
+    default:
+      return null;
+  }
+}
+
+function playEvents(events: GameEvent[]) {
+  if (!view) return;
+  const played = new Set<SeId>();
+  for (const event of events) {
+    const found = eventSound(event, view);
+    if (!found || played.has(found[0])) continue;
+    played.add(found[0]);
+    sound.se(found[0], found[1]);
+  }
+}
+
+/** 音量の設定。ホームとゲーム画面の両方に同じものを出す */
+function renderSoundControls() {
+  for (const id of ['sound-home', 'sound-game']) {
+    const box = $(id);
+    const mute = document.createElement('label');
+    mute.className = 'sound-row';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = !sound.settings.muted;
+    check.addEventListener('change', () => {
+      sound.unlock();
+      sound.setMuted(!check.checked);
+      renderSoundControls();
+    });
+    const label = document.createElement('span');
+    label.textContent = '音を出す';
+    mute.append(check, label);
+    const slider = (name: string, kind: 'bgm' | 'se') => {
+      const row = document.createElement('label');
+      row.className = 'sound-row';
+      const text = document.createElement('span');
+      text.textContent = name;
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.min = '0';
+      range.max = '1';
+      range.step = '0.05';
+      range.value = String(sound.settings[kind]);
+      range.setAttribute('aria-label', `${name}の音量`);
+      range.addEventListener('change', () => {
+        sound.unlock();
+        sound.setVolume(kind, Number(range.value));
+        if (kind === 'se') sound.se('gather');
+        renderSoundControls();
+      });
+      row.append(text, range);
+      return row;
+    };
+    box.replaceChildren(mute, slider('BGM', 'bgm'), slider('効果音', 'se'));
+  }
 }
 
 function toast(text: string, ms = TOAST_MS) {
@@ -244,6 +405,7 @@ function handleMessage(message: ServerMessage) {
       break;
     case 'announce':
       if (view) {
+        playEvents(message.events);
         for (const event of message.events) {
           const text = describeEvent(event, nameOf, view.me.id);
           if (text) log.unshift(text);
@@ -260,6 +422,8 @@ function handleMessage(message: ServerMessage) {
     }
     case 'whisperUpdate':
       if (view) {
+        const before = new Set(view.whispers.map((w) => w.id));
+        if (message.whispers.some((w) => w.incoming && w.status === 'pending' && !before.has(w.id))) sound.se('whisper');
         view.whispers = message.whispers;
         view.whisperSeen = message.whisperSeen;
         renderWhispers(view);
@@ -1262,6 +1426,7 @@ function render(centerOnPlayer: boolean) {
   if (!view) return;
   const current = view;
   document.body.dataset.phase = current.phase;
+  updateMusic();
   current.cells.forEach((cell, i) => renderCell(cellButtons[i], cell, current));
 
   const projection = projectPlan(current, plan);
@@ -1278,7 +1443,7 @@ function render(centerOnPlayer: boolean) {
   $('turn-label').textContent = `ターン ${current.turn}`;
   $('hp-value').textContent = current.me.alive ? `${current.me.hp}` : current.ghost ? '幽霊' : '脱落';
   $('ap-pips').innerHTML = Array.from(
-    { length: AP_DISPLAY },
+    { length: BALANCE.apPerTurn },
     (_, i) => `<i class="${i < projection.ap ? 'on' : ''}"></i>`,
   ).join('');
   renderTimer();
@@ -1406,6 +1571,7 @@ function playReplay(steps: ReplayStep[], stepMs: number) {
 function applyStep(step: ReplayStep) {
   const moved = !!step.view;
   if (step.view) view = step.view;
+  playEvents(step.events);
   for (const event of step.events) {
     if (event.type === 'actorTurn') actingId = event.playerId;
     if (event.type === 'turnStarted') actingId = null;
@@ -1553,6 +1719,15 @@ if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     document.body.dataset.frame = String(frame);
   }, FRAME_MS);
 }
+
+// スマホは画面を触るまで音を出せない。最初の操作で音を有効にする
+const unlockSound = () => {
+  sound.unlock();
+  updateMusic();
+};
+window.addEventListener('pointerdown', unlockSound, { once: true });
+window.addEventListener('keydown', unlockSound, { once: true });
+renderSoundControls();
 
 watchSlowConnect();
 try {

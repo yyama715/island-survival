@@ -487,3 +487,9 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
 @media (prefers-reduced-motion: reduce) {
   .btn:active:not(:disabled) { transform: none; }
 }
+
+/* 音の設定 */
+.sound-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.sound-row span { flex: none; width: 4.5em; }
+.sound-row input[type="range"] { flex: 1; min-height: 32px; padding: 0; border: 0; box-shadow: none; background: transparent; accent-color: var(--accent); }
+.sound-row input[type="checkbox"] { width: 22px; min-height: 22px; accent-color: var(--accent); }

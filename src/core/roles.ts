@@ -18,42 +18,42 @@ export const JOBS: Record<JobId, JobDef> = {
     name: '漁師',
     agility: 2,
     passive: '砂浜の採取で魚が出やすい',
-    goal: '島の主を釣り上げ、持ったまま3ターン生き延びる',
+    goal: '島の主を釣り上げ、持ったまま4ターン生き延びる',
     items: [stack('fishing_line'), stack('stone_knife'), stack('dried_fish')],
   },
   carpenter: {
     name: '大工',
     agility: 1,
     passive: 'クラフトと建設のAP−1（最低1）',
-    goal: '砦を完成させ、4ターン壊されずに守る',
+    goal: '砦を完成させ、3ターン壊されずに守る',
     items: [stack('nails'), stack('rope'), stack('wood', 2)],
   },
   doctor: {
     name: '医師',
     agility: 1,
     passive: '治療（AP1）で相手のHP+3と状態異常を解除。初めて治療した相手は最大HP+1。薬を作れる',
-    goal: '治療を合計5回（同じ相手は2回まで）行い、7日目の朝を生きて迎える',
+    goal: '治療を合計3回（同じ相手は2回まで）行い、7日目の朝を生きて迎える',
     items: [stack('bandage', 2), stack('antiseptic'), stack('medicine')],
   },
   soldier: {
     name: '元軍人',
     agility: 2,
     passive: '攻撃力+1、命中率+10%',
-    goal: '戦果を8点集める（命中1点、プレイヤーを脱落させると3点）',
+    goal: '戦果を6点集める（命中1点、プレイヤーを脱落させると3点）',
     items: [stack('survival_knife'), stack('compass')],
   },
   explorer: {
     name: '探検家',
     agility: 3,
     passive: '視界+1',
-    goal: '島の陸地の40%を踏破し、特殊マスを3か所訪れる',
+    goal: '島の陸地の25%を踏破し、特殊マスを2か所訪れる',
     items: [stack('map_fragment'), stack('binoculars'), stack('canteen')],
   },
   cook: {
     name: '料理人',
     agility: 2,
     passive: '食料の回復量+1。キノコの中毒にならない',
-    goal: '6ジャンルの食材で島のフルコースを作って食べる',
+    goal: '6ジャンルのうち4ジャンルの食材で島のフルコースを作って食べる',
     items: [stack('pot'), stack('salt'), stack('matches')],
   },
 };
@@ -134,25 +134,27 @@ export const ITEM_GENRE: Partial<Record<ItemId, FoodGenre>> = {
 // 4.5 特殊勝利の数値
 export const GOALS = {
   /** 釣果が累計この数で必ず島の主が出る */
-  lordCeiling: 8,
+  lordCeiling: 10,
   /** 主を奪われたあとは、この数の釣果で2匹目が出る */
   secondLordCeiling: 4,
   /** 天井に届く前に主が出る確率（初期案） */
   lordChance: 0.05,
-  lordHoldTurns: 3,
-  fortHoldTurns: 4,
+  lordHoldTurns: 4,
+  fortHoldTurns: 3,
   fortHp: 10,
   fortRepair: 3,
   fortDefense: 2,
-  healsNeeded: 5,
+  healsNeeded: 3,
   healPerTarget: 2,
   /** 7日目の朝 */
   doctorSurviveTurn: 13,
-  warPoints: 8,
+  warPoints: 6,
   warPerHit: 1,
   warPerKill: 3,
-  exploreRatio: 0.4,
-  specialsNeeded: 3,
+  exploreRatio: 0.25,
+  /** フルコースに要るジャンルの数（島の主は2ジャンル分） */
+  courseGenres: 4,
+  specialsNeeded: 2,
   healAmount: 3,
 };
 

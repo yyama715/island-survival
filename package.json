@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node --watch --import tsx src/server/main.ts",
     "build": "npm run typecheck && vite build",
+    "sim": "node --import tsx src/sim/run.ts",
     "start": "node --import tsx src/server/main.ts --prod",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.core.json && tsc --noEmit -p tsconfig.server.json"

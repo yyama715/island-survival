@@ -460,12 +460,13 @@ describe('特殊勝利', () => {
     expect(finishes(win)).toMatchObject({ finished: true, winnerId: 0, victoryReason: 'explorer' });
   });
 
-  it('料理人：6ジャンルでフルコースを作って食べると勝つ。島の主は2ジャンル分', () => {
+  it('料理人：決まった数のジャンルでフルコースを作って食べると勝つ。島の主は2ジャンル分', () => {
     let state = arena();
     state.players[0].job = 'cook';
-    for (const item of ['fish', 'egg', 'fruit', 'mushroom', 'shell'] as ItemId[]) give(state, 0, item);
+    const genres = ['fish', 'egg', 'fruit', 'mushroom', 'shell', 'herb'] as ItemId[];
+    for (const item of genres.slice(0, GOALS.courseGenres - 1)) give(state, 0, item);
     expect(applyAction(state, { type: 'craft', playerId: 0, recipe: 'full_course' }).events[0]).toMatchObject({ reason: 'missingMaterials' });
-    give(state, 0, 'herb');
+    give(state, 0, genres[GOALS.courseGenres - 1]);
     state = applyAction(state, { type: 'craft', playerId: 0, recipe: 'full_course' }).state;
     expect(state.players[0].inventory).toEqual([{ item: 'full_course', count: 1 }]);
     const { state: eaten, steps } = resolveTurn(state, { 0: [{ type: 'use', item: 'full_course' }] });
@@ -474,7 +475,7 @@ describe('特殊勝利', () => {
 
     const lord = arena();
     lord.players[0].job = 'cook';
-    for (const item of ['island_lord', 'fruit', 'mushroom', 'shell', 'herb'] as ItemId[]) give(lord, 0, item);
+    for (const item of ['island_lord', 'fruit', 'mushroom', 'shell', 'herb'].slice(0, GOALS.courseGenres - 1) as ItemId[]) give(lord, 0, item);
     expect(applyAction(lord, { type: 'craft', playerId: 0, recipe: 'full_course' }).events[0].type).toBe('crafted');
   });
 

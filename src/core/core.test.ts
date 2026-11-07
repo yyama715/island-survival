@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AP_PER_TURN,
+  BALANCE,
   applyAction,
   checkFairness,
   createGame,
@@ -198,7 +198,7 @@ describe('移動', () => {
     const dx = direction === 'right' ? 1 : direction === 'left' ? -1 : 0;
     const dy = direction === 'down' ? 1 : direction === 'up' ? -1 : 0;
     state.map.terrain[cellIndex(state, me.x + dx, me.y + dy)] = terrain;
-    me.ap = AP_PER_TURN;
+    me.ap = BALANCE.apPerTurn;
     return state;
   }
 
@@ -216,7 +216,7 @@ describe('移動', () => {
   ] as [TerrainId, number][])('%s の移動コストは %i', (terrain, cost) => {
     const state = withNeighbor(terrain);
     const { state: next } = applyAction(state, { type: 'move', playerId: ME, direction: 'right' });
-    expect(next.players[ME].ap).toBe(AP_PER_TURN - cost);
+    expect(next.players[ME].ap).toBe(BALANCE.apPerTurn - cost);
     expect(next.players[ME].x).toBe(state.players[ME].x + 1);
   });
 
@@ -224,7 +224,7 @@ describe('移動', () => {
     const state = withNeighbor('sea');
     const { state: next, events } = applyAction(state, { type: 'move', playerId: ME, direction: 'right' });
     expect(next.players[ME].x).toBe(state.players[ME].x);
-    expect(next.players[ME].ap).toBe(AP_PER_TURN);
+    expect(next.players[ME].ap).toBe(BALANCE.apPerTurn);
     expect(events[0]).toMatchObject({ type: 'blocked', reason: 'sea' });
   });
 
@@ -261,7 +261,7 @@ describe('移動', () => {
     const state = sandbox('grass');
     state.players[ME].ap = 0;
     const night = applyAction(state, { type: 'endTurn' });
-    expect(night.state.players[ME].ap).toBe(AP_PER_TURN);
+    expect(night.state.players[ME].ap).toBe(BALANCE.apPerTurn);
     expect(night.events[0]).toMatchObject({ turn: 2, day: 1, phase: 'night' });
     const day2 = applyAction(night.state, { type: 'endTurn' });
     expect(day2.events[0]).toMatchObject({ turn: 3, day: 2, phase: 'day' });
