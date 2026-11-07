@@ -1099,7 +1099,7 @@ function dealBox(current: PlayerView, whisper: PlayerView['whispers'][number]): 
   if (trade) {
     const line = document.createElement('p');
     line.className = 'deal-row';
-    const status = { proposed: '返事待ち', agreed: '合意（解決で交換）', refused: '断られた', done: '済み' }[trade.status];
+    const status = { proposed: '返事待ち', agreed: '合意（実行で交換）', refused: '断られた', done: '済み' }[trade.status];
     line.textContent = `取引：${ITEMS[trade.give.item].name}×${trade.give.count}を渡し、${ITEMS[trade.take.item].name}×${trade.take.count}をもらう【${status}】`;
     box.append(line);
     if (trade.status === 'proposed' && !trade.mine) {
@@ -1598,7 +1598,7 @@ function render(centerOnPlayer: boolean) {
   $<HTMLButtonElement>('undo').disabled = !editing || plan.length === 0;
   const confirm = $<HTMLButtonElement>('confirm');
   confirm.disabled = !planning || (!current.me.alive && !current.ghost);
-  $('confirm-label').textContent = !planning ? '解決中…' : ready ? '予約を修正する' : '予約を確定';
+  $('confirm-label').textContent = !planning ? '実行中…' : ready ? '予約を修正する' : '予約を確定';
   confirm.classList.toggle('btn-primary', planning && !ready);
 
   renderInventory(current);
