@@ -1,0 +1,83 @@
+/* 印刷向けのルールブック。A4縦で3枚に収める */
+@page { size: A4; margin: 11mm 12mm; }
+
+:root {
+  --ink: #141a2e;
+  --navy: #1d2c55;
+  --accent: #c9601c;
+  --line: #c7cde0;
+  --soft: #eef1f8;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; color: var(--ink); }
+body {
+  font-family: "Yu Gothic", "YuGothic", "Hiragino Sans", "Meiryo", sans-serif;
+  font-size: 8.4pt;
+  line-height: 1.42;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+img { image-rendering: pixelated; }
+
+.page { width: 186mm; min-height: 273mm; margin: 0 auto; page-break-after: always; break-after: page; }
+.page:last-child { page-break-after: auto; break-after: auto; }
+@media screen {
+  body { background: #d9dde8; padding: 8mm 0; }
+  .page { background: #fff; padding: 11mm 12mm; width: 210mm; min-height: 297mm; margin-bottom: 8mm; box-shadow: 0 2px 8px #0003; }
+}
+
+.pixel { font-family: "DotGothic16", "Yu Gothic", sans-serif; }
+
+.cover {
+  display: grid;
+  grid-template-columns: 1fr 70mm;
+  gap: 6mm;
+  align-items: center;
+  padding: 4mm 5mm;
+  margin-bottom: 4mm;
+  background: var(--navy);
+  color: #fff;
+  border: 2px solid var(--ink);
+}
+.cover h1 { margin: 0; font-size: 26pt; color: #ffc56e; letter-spacing: 0.04em; }
+.cover p { margin: 1mm 0 0; }
+.cover .tiny { color: #c8d2ec; }
+.cover .lead { font-size: 11pt; color: #ffc56e; }
+.cover img { width: 100%; display: block; border: 2px solid #ffc56e; image-rendering: auto; }
+
+h2 {
+  margin: 3mm 0 1.2mm;
+  padding: 0.6mm 2.5mm;
+  background: var(--navy);
+  color: #fff;
+  font-size: 11pt;
+  font-weight: 400;
+}
+h3 { margin: 2.5mm 0 1mm; font-size: 10pt; color: var(--navy); border-bottom: 1.5px solid var(--navy); }
+p { margin: 1mm 0; }
+ul, ol { margin: 1mm 0; padding-left: 5mm; }
+li { margin: 0.4mm 0; }
+b { color: var(--accent); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 6mm; }
+.cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 4mm; }
+
+table { width: 100%; border-collapse: collapse; margin: 1mm 0; font-size: 7.7pt; }
+th, td { padding: 0.5mm 1.2mm; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+th { background: var(--soft); font-weight: 700; white-space: nowrap; }
+td.icon, th.icon { width: 8mm; text-align: center; padding: 0.5mm; }
+td.icon img { width: 5mm; height: 5mm; display: block; margin: auto; }
+td.num { white-space: nowrap; text-align: center; }
+
+.box { padding: 1.5mm 2.5mm; margin: 1.5mm 0; background: var(--soft); border-left: 3px solid var(--accent); }
+.flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2mm; margin: 1.5mm 0; }
+.flow div { padding: 1.5mm 2mm; border: 1.5px solid var(--navy); }
+.flow strong { display: block; color: var(--navy); }
+.tiny { font-size: 7.8pt; color: #4a5370; }
+.foot { margin-top: 3mm; font-size: 7.8pt; color: #4a5370; text-align: right; }
+
+/* 紙の高さちょうどにすると端数で白紙が挟まるので、印刷では高さを決めない */
+@media print {
+  .page { min-height: 0; }
+}

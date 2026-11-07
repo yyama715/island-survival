@@ -32,6 +32,8 @@
 
 音は `src/ui/audio.ts` で Web Audio から鳴らす（外部の音源なし）。
 
+ユーザー向けのルールブックは `rulebook.html`（`src/ui/rulebook.ts`）。数値はルール本体のデータから読む。PDF は Edge の headless 印刷で docs/rulebook.pdf に書き出す（A4で3枚に収める）。
+
 複数人の確認は、同じPCならタブを分ければ別の席になる（席の記憶はタブごと）。
 
 本番は LAN ではなくインターネットに公開する。手順と入れてある守りは docs/deploy.md にまとめている。

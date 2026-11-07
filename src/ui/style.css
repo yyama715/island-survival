@@ -493,3 +493,5 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
 .sound-row span { flex: none; width: 4.5em; }
 .sound-row input[type="range"] { flex: 1; min-height: 32px; padding: 0; border: 0; box-shadow: none; background: transparent; accent-color: var(--accent); }
 .sound-row input[type="checkbox"] { width: 22px; min-height: 22px; accent-color: var(--accent); }
+
+.rulebook-link { display: block; padding: 6px; color: var(--gold); text-align: center; font-size: 14px; }
