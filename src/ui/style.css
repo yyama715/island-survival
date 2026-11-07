@@ -275,11 +275,11 @@ summary { cursor: pointer; }
 .game {
   display: grid;
   grid-template:
-    "hud  hud"  auto
-    "board side" minmax(0, 1fr) / minmax(0, 1fr) 340px;
+    "hud   hud  hud"   auto
+    "board side extra" minmax(0, 1fr) / minmax(0, 1fr) 340px 320px;
   gap: 8px;
   height: 100dvh;
-  max-width: 1180px;
+  max-width: 1560px;
   margin: 0 auto;
   padding: 8px;
 }
@@ -431,6 +431,22 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
   min-height: 0;
   overflow-y: auto;
 }
+.side-extra { grid-area: extra; }
+
+/* 3列が入らない幅では、所持品より下の項目を2列目の続きに並べる */
+@media (min-width: 761px) and (max-width: 1180px) {
+  .game {
+    grid-template:
+      "hud   hud"   auto
+      "board side"  auto
+      "board extra" 1fr / minmax(0, 1fr) 340px;
+    height: auto;
+    min-height: 100dvh;
+  }
+  /* 右の列が長くなるのでページごと縦に流し、マップは画面に留める */
+  .board { position: sticky; top: 8px; align-self: start; height: calc(100dvh - 80px); }
+  .side { overflow: visible; }
+}
 
 .actions { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 6px; }
 .actions .btn { padding: 6px 2px; font-size: 14px; }
@@ -465,7 +481,8 @@ body[data-frame="1"] .tile img.self-arrow { transform: translateY(-3px); }
     grid-template:
       "hud" auto
       "board" minmax(280px, 52dvh)
-      "side" auto / minmax(0, 1fr);
+      "side" auto
+      "extra" auto / minmax(0, 1fr);
     height: auto;
     min-height: 100dvh;
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
