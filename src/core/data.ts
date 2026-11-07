@@ -80,6 +80,8 @@ export const REST_HUT_MULTIPLIER = 2;
 export const HEAL_AP = 1;
 /** 治療が届く距離（テストプレイを受けて隣のマスまで） */
 export const HEAL_RANGE = 1;
+/** 難破船の部品はいかだに運ぶと木材この本数分 */
+export const WRECK_PART_WOOD = 2;
 export const EXPLORE_AP = 1;
 export const REPAIR_AP = 1;
 
@@ -191,7 +193,9 @@ export const RECIPES: Record<RecipeId, RecipeDef> = {
   stone_knife: { name: '石のナイフ', ap: 1, inputs: [need(['stone', 1], ['wood', 1])], output: { item: 'stone_knife', count: 1 }, summary: '攻撃 1d3+1' },
   stone_axe: { name: '石斧', ap: 2, inputs: [need(['stone', 2], ['wood', 1])], output: { item: 'stone_axe', count: 1 }, summary: '攻撃 1d3+2、木材の採取が倍' },
   spear: { name: '槍', ap: 2, inputs: [need(['wood', 2], ['stone', 1])], output: { item: 'spear', count: 1 }, summary: '隣接8マスから攻撃 1d3+2' },
+  feather_bow: { name: '羽根の弓', ap: 2, inputs: [need(['wood', 2], ['rope', 1], ['big_feather', 1])], output: { item: 'feather_bow', count: 1 }, summary: '弓より命中率+10%。2マス先まで攻撃（夜は使えない）' },
   bow: { name: '弓', ap: 2, inputs: [need(['wood', 2], ['rope', 1], ['ore', 1])], output: { item: 'bow', count: 1 }, summary: '2マス先まで攻撃（夜は使えない）' },
+  bright_torch: { name: '明るい松明', ap: 1, inputs: [need(['wood', 1], ['grass', 1], ['big_feather', 1])], output: { item: 'bright_torch', count: 1 }, summary: '夜の視界+2。ただし夜でも誰なのか見える' },
   torch: { name: '松明', ap: 1, inputs: [need(['wood', 1], ['grass', 1])], output: { item: 'torch', count: 1 }, summary: '夜の視界+1。ただし夜でも誰なのか見える' },
   canteen: { name: '水筒', ap: 1, inputs: [need(['shell_husk', 2])], output: { item: 'canteen', count: 1 }, summary: '水を持ち運べる' },
   bandage: { name: '包帯', ap: 1, inputs: [need(['grass', 2])], output: { item: 'bandage', count: 1 }, summary: '使うとHP+2、出血が止まる。出血中に作ると自動で使う' },
@@ -247,6 +251,8 @@ export const WEAPONS: Partial<Record<ItemId, WeaponDef>> = {
   survival_knife: { range: 0, hit: 0.7, rollsD3: true, bonus: 1, bleed: 1 },
   spear: { range: 1, hit: 0.6, rollsD3: true, bonus: 2, bleed: 0.5 },
   bow: { range: 2, hit: 0.6, rollsD3: false, bonus: 2, ranged: true, bleed: 0.5 },
+  // 大羽根で作る弓。命中率だけ高い
+  feather_bow: { range: 2, hit: 0.7, rollsD3: false, bonus: 2, ranged: true, bleed: 0.5 },
 };
 /** 投石。石を1個使う。武器ではないので略奪の対象になる */
 export const THROW: WeaponDef = { range: 2, hit: 0.5, rollsD3: false, bonus: 1, ranged: true, straightOnly: true, bleed: 0 };
@@ -487,6 +493,8 @@ export const ITEMS: Record<ItemId, { name: string; use?: ItemUse }> = {
   fishing_line: { name: '釣り糸' },
   fishing_rod: { name: '釣竿' },
   canteen: { name: '水筒' },
+  feather_bow: { name: '羽根の弓' },
+  bright_torch: { name: '明るい松明' },
 };
 
 /** 火起こし名人は狼煙と焚き火の木材が1少ない */

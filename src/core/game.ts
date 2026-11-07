@@ -17,6 +17,7 @@ import {
   FISHER_FISH_MULTIPLIER,
   HEAL_AP,
   HEAL_RANGE,
+  WRECK_PART_WOOD,
   recipeInputs,
   LOST_SENSE_DRIFT,
   LOST_SENSE_GATHER,
@@ -155,7 +156,9 @@ export function playerVision(state: GameState, player: PlayerState): number {
   const here = state.map.terrain[cellIndex(state, player.x, player.y)];
   // 夜目は夜でも昼と同じ視界
   const phase = player.publicTrait === 'night_eyes' ? 'day' : phaseOf(state.turn);
-  let radius = visionRadius(here, phase, hasItem(player, 'torch'));
+  const bright = hasItem(player, 'bright_torch');
+  let radius = visionRadius(here, phase, bright || hasItem(player, 'torch'));
+  if (bright && phase === 'night') radius += 1;
   if (hasRole(player, 'explorer')) radius += 1;
   if (phaseOf(state.turn) === 'day' && hasItem(player, 'binoculars')) radius += 1;
   if (player.exploreTurn === state.turn) radius += 1;
@@ -185,6 +188,7 @@ export const seesNames = (state: GameState, viewer: PlayerState, other: PlayerSt
   phaseOf(state.turn) === 'day' ||
   viewer.publicTrait === 'night_eyes' ||
   hasItem(other, 'torch') ||
+  hasItem(other, 'bright_torch') ||
   (viewer.publicTrait === 'sentinel' && chebyshev(viewer.x, viewer.y, other.x, other.y) <= 1);
 
 export function visibleCells(state: GameState, player: PlayerState): number[] {
@@ -658,7 +662,7 @@ function weaponsBestFirst(player: PlayerState, night: boolean): WeaponDef[] {
   const expected = (w: WeaponDef) => w.hit * ((w.rollsD3 ? 2 : 0) + w.bonus);
   const owned = player.inventory.flatMap(({ item }) => {
     let weapon = WEAPONS[item];
-    if (weapon && item === 'bow' && player.publicTrait === 'archer') weapon = { ...weapon, range: weapon.range + ARCHER.range, hit: weapon.hit + ARCHER.hit };
+    if (weapon && (item === 'bow' || item === 'feather_bow') && player.publicTrait === 'archer') weapon = { ...weapon, range: weapon.range + ARCHER.range, hit: weapon.hit + ARCHER.hit };
     return weapon && !(night && weapon.ranged) ? [weapon] : [];
   });
   return [...owned, UNARMED].sort((a, b) => expected(b) - expected(a));
@@ -1205,6 +1209,21 @@ function raftWork(state: GameState, player: PlayerState, events: GameEvent[]) {
     else raft.stock!.push({ item: need.item, count: moved });
     stored.push({ item: need.item, count: moved });
   }
+  // 難破船の部品は木材の代わりになる（1つで木材2本分）
+  const woodNeed = RAFT.needs.find((n) => n.item === 'wood')!;
+  const wood = raft.stock!.find((s) => s.item === 'wood');
+  let woodMissing = woodNeed.count - (wood?.count ?? 0);
+  let parts = 0;
+  while (woodMissing > 0 && countItem(player, 'wreck_part') > 0) {
+    removeItem(player, 'wreck_part', 1);
+    parts += 1;
+    const add = Math.min(WRECK_PART_WOOD, woodMissing);
+    woodMissing -= add;
+    const stack = raft.stock!.find((s) => s.item === 'wood');
+    if (stack) stack.count += add;
+    else raft.stock!.push({ item: 'wood', count: add });
+  }
+  if (parts > 0) stored.push({ item: 'wreck_part', count: parts });
   if (stored.length === 0 && !existing) {
     events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
     return;
@@ -1676,9 +1695,12 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       if (player.secretTrait !== 'radio' || player.secretUsed) {
         events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
       } else if (!player.radioFixed) {
-        if (!onMountain) events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+        const withPart = !onMountain && countItem(player, 'wreck_part') > 0;
+        if (!onMountain && !withPart) events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
         else if (player.ap < SMOKE.radioRepairAp) events.push({ type: 'blocked', playerId, reason: 'noAp' });
         else {
+          // 難破船の部品を使うと、山でなくても直せる
+          if (withPart) removeItem(player, 'wreck_part', 1);
           player.ap -= SMOKE.radioRepairAp;
           player.radioFixed = true;
           events.push({ type: 'radioFixed', playerId });

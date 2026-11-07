@@ -479,7 +479,11 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
     } else if (action.type === 'useRadio') {
       if (view.secret.trait !== 'radio' || view.secret.used) ok = false;
       ap -= view.secret.radioFixed ? SMOKE.radioCallAp : SMOKE.radioRepairAp;
-      if (!view.secret.radioFixed && terrainAt(x, y) !== 'mountain') ok = false;
+      if (!view.secret.radioFixed && terrainAt(x, y) !== 'mountain') {
+        // 難破船の部品があれば山以外でも直せる
+        if ((owned.get('wreck_part') ?? 0) > 0) spend('wreck_part', 1);
+        else ok = false;
+      }
     } else if (action.type === 'scout') {
       if (me?.publicTrait !== 'hawk_eye' || scouted) ok = false;
       scouted = true;

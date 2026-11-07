@@ -825,6 +825,8 @@ const ITEM_ART: Record<ItemId, [keyof typeof SHAPES, string, string, Palette?]> 
   spear: ['spear', '#b8b4a8', '#807c74'],
   bow: ['bow', '#a8703c', '#7a4a28'],
   torch: ['torch', '#ffd24a', '#f08a2c'],
+  bright_torch: ['torch', '#fff4b0', '#ffd24a'],
+  feather_bow: ['bow', '#d8bc84', '#a88c58'],
   bandage: ['cloth', '#fff8e8', '#e0483e'],
   sail: ['sail', '#fff8e8', '#c8c0b0'],
   shell_husk: ['shell', '#e8e0d0', '#b8a890'],

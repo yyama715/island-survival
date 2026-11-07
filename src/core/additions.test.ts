@@ -291,3 +291,43 @@ describe('新しい特性', () => {
     expect(senseBetrayal(arena(), 0, plan).notices).toEqual([]);
   });
 });
+
+describe('難破船の部品と大羽根', () => {
+  it('難破船の部品はいかだに運ぶと木材2本分になる', () => {
+    const state = arena(6);
+    const me = state.players[0];
+    state.map.terrain[cellIndex(state, me.x, me.y)] = 'beach';
+    give(state, 0, 'wood', 3);
+    give(state, 0, 'wreck_part', 2);
+    const next = applyAction(state, { type: 'raftWork', playerId: 0 }).state;
+    const raft = next.structures[cellIndex(next, me.x, me.y)];
+    expect(raft.stock).toContainEqual({ item: 'wood', count: 7 });
+    expect(next.players[0].inventory.some((s) => s.item === 'wreck_part')).toBe(false);
+  });
+
+  it('難破船の部品があれば、救助の無線機を山以外でも直せる（部品は1つ使う）', () => {
+    const state = arena();
+    state.players[0].secretTrait = 'radio';
+    expect(applyAction(state, { type: 'useRadio', playerId: 0 }).events[0]).toMatchObject({ reason: 'notAllowed' });
+    give(state, 0, 'wreck_part', 1);
+    expect(projectPlan(getPlayerView(state, 0), [{ type: 'useRadio' }]).ok).toBe(true);
+    const r = applyAction(state, { type: 'useRadio', playerId: 0 });
+    expect(r.state.players[0].radioFixed).toBe(true);
+    expect(r.state.players[0].inventory).toEqual([]);
+  });
+
+  it('大羽根で羽根の弓（命中率+10%）と明るい松明（夜の視界+2）を作れる', () => {
+    const state = arena();
+    give(state, 0, 'wood', 3);
+    give(state, 0, 'rope', 1);
+    give(state, 0, 'grass', 1);
+    give(state, 0, 'big_feather', 2);
+    let next = applyAction(state, { type: 'craft', playerId: 0, recipe: 'feather_bow' }).state;
+    next = applyAction(next, { type: 'craft', playerId: 0, recipe: 'bright_torch' }).state;
+    expect(next.players[0].inventory.map((s) => s.item)).toEqual(expect.arrayContaining(['feather_bow', 'bright_torch']));
+    next.turn = 8;
+    const torchOnly = JSON.parse(JSON.stringify(next)) as GameState;
+    torchOnly.players[0].inventory = [{ item: 'torch', count: 1 }];
+    expect(getPlayerView(next, 0).me.visionRadius).toBe(getPlayerView(torchOnly, 0).me.visionRadius + 1);
+  });
+});
