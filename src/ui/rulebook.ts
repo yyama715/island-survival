@@ -35,6 +35,23 @@ import {
   type RecipeId,
   type TerrainId,
   type TraitId,
+  CASTAWAY_REWARDS,
+  DEPLETION,
+  DRINK_AT_SOURCE,
+  FISHER_FISH_MULTIPLIER,
+  FOLLOWER_GATHER,
+  LOST_SENSE_GATHER,
+  NEST_HIT_BONUS,
+  NIGHT_GATHER_PENALTY,
+  NPC_MEAT,
+  PITY_AFTER_DRY_STREAK,
+  RIVER_FISH_CHANCE,
+  SPECIAL_LOOT,
+  SPECIAL_REPEAT_NOTHING_CHANCE,
+  SPECIAL_TERRAINS,
+  SUPPLY_ITEMS,
+  type ItemId,
+  type ItemRoll,
 } from '../core/index';
 import titleImage from './title.webp';
 import { iconUrl, itemUrl, personUrl, structureUrl, terrainUrl } from './sprites';
@@ -142,7 +159,7 @@ const page1 = `
       <li><b>医師の治療</b>は同じマスか隣のマスの相手に届く</li>
     </ul>
   </div>
-  <p class="foot">1 / 3</p>
+  <p class="foot">1 / 4</p>
 </section>`;
 
 const page2 = `
@@ -219,7 +236,7 @@ const page2 = `
       <li>罠：そのマスに入った他人にHP−2＋足止め。瓶で殴ると1回で割れる。脱落した人の持ち物は「遺品」として残る</li>
     </ul>
   </div>
-  <p class="foot">2 / 3</p>
+  <p class="foot">2 / 4</p>
 </section>`;
 
 const page3 = `
@@ -259,7 +276,113 @@ const page3 = `
     </ul>
   </div>
 
-  <p class="foot">3 / 3</p>
+  <p class="foot">3 / 4</p>
 </section>`;
 
-document.getElementById('book')!.innerHTML = page1 + page2 + page3;
+/** 4ページ目：どこで何が採れるか。数字は採取テーブルから計算する */
+const pct = (n: number) => `${Math.round(n * 100)}%`;
+const rollText = (rolls: ItemRoll[]) =>
+  rolls.map((r) => `${ITEMS[r.item].name}${r.max > 1 ? `×${r.min === r.max ? r.min : `${r.min}〜${r.max}`}` : ''}`).join('／');
+
+function gatherCell(terrain: TerrainId): string {
+  const entries = TERRAIN[terrain].gather;
+  const total = entries.reduce((n, e) => n + e.weight, 0);
+  return entries
+    .map((e) => {
+      const p = pct(e.weight / total);
+      if (e.kind === 'nothing') return `<span class="miss">何もなし ${p}</span>`;
+      if (e.kind === 'nest') return `小動物の巣 ${p}（次の狩りの命中+${Math.round(NEST_HIT_BONUS * 100)}%）`;
+      if (e.kind === 'danger') return `<span class="miss">野生動物に襲われる ${p}（HP−${e.damage}）</span>`;
+      const pick = e.rolls.length > 1 ? '（どれか1つ）' : '';
+      const need = e.requiresAnyOf ? '（<b>釣り道具が必要</b>）' : '';
+      return `${rollText(e.rolls)} ${p}${pick}${need}`;
+    })
+    .join('、');
+}
+
+/** 素材から採れる場所を引く */
+function whereToFind(): { item: ItemId; where: string[] }[] {
+  const found = new Map<ItemId, string[]>();
+  const note = (item: ItemId, text: string) => {
+    const list = found.get(item) ?? [];
+    if (!list.includes(text)) list.push(text);
+    found.set(item, list);
+  };
+  for (const t of ['beach', 'grass', 'forest', 'rock', 'mountain'] as TerrainId[]) {
+    for (const e of TERRAIN[t].gather) if (e.kind === 'item') for (const r of e.rolls) note(r.item, TERRAIN[t].name);
+  }
+  note('water', '泉・川（水筒があれば持ち運べる）');
+  note('fish', `川（釣り道具があれば${pct(RIVER_FISH_CHANCE)}）`);
+  for (const t of SPECIAL_TERRAINS) for (const r of SPECIAL_LOOT[t]) note(r.item, `${TERRAIN[t].name}（最初の1回）`);
+  note('meat', `狩り（小動物${NPC_MEAT.critter}・群れ${NPC_MEAT.herd}・大イノシシ${NPC_MEAT.boar}。刃物があれば+1）`);
+  note('island_lord', `漁師が魚を釣り続けると（${GOALS.lordCeiling}匹で必ず）`);
+  for (const id of Object.keys(RECIPES) as RecipeId[]) {
+    const out = RECIPES[id].output;
+    if (out && !RECIPES[id].course) note(out.item, 'クラフトで作る');
+  }
+  for (const s of SUPPLY_ITEMS) note(s.item, '支援物資');
+  for (const s of CASTAWAY_REWARDS) note(s.item, '漂流者のお礼');
+  for (const job of JOB_IDS) for (const s of JOBS[job].items) note(s.item, '初期所持品');
+  note('shell_husk', '貝を食べると残る');
+  return (Object.keys(ITEMS) as ItemId[])
+    .filter((item) => item !== 'full_course')
+    .map((item) => ({ item, where: found.get(item) ?? [] }));
+}
+
+const terrainRows = (['beach', 'grass', 'forest', 'rock', 'mountain'] as TerrainId[])
+  .map((t) => `<tr><td class="icon">${img(terrainUrl(t, 0, 0))}</td><th>${TERRAIN[t].name}</th><td>${gatherCell(t)}</td></tr>`)
+  .join('');
+const waterRows = (['spring', 'river'] as TerrainId[])
+  .map(
+    (t) =>
+      `<tr><td class="icon">${img(terrainUrl(t, 0, 0))}</td><th>${TERRAIN[t].name}</th><td>必ず水が飲める（水分+${DRINK_AT_SOURCE}）。水筒があれば淡水1つを持ち帰る${t === 'river' ? `。釣り道具があれば${pct(RIVER_FISH_CHANCE)}で魚も` : ''}。採り尽くされない</td></tr>`,
+  )
+  .join('');
+const specialRows = SPECIAL_TERRAINS.map(
+  (t) =>
+    `<tr><td class="icon">${img(terrainUrl(t, 0, 0))}</td><th>${TERRAIN[t].name}</th><td>最初の1回はレア確定：${rollText(SPECIAL_LOOT[t])}のどれか。2回目からは${pct(SPECIAL_REPEAT_NOTHING_CHANCE)}で何もなし</td></tr>`,
+).join('');
+const findRows = whereToFind();
+const half = Math.ceil(findRows.length / 2);
+const findTable = (rows: typeof findRows) =>
+  `<table>${rows
+    .map(({ item, where }) => `<tr><td class="icon">${img(itemUrl(item))}</td><th>${ITEMS[item].name}</th><td>${where.join('、') || '—'}</td></tr>`)
+    .join('')}</table>`;
+
+const page4 = `
+<section class="page">
+  <h2 class="pixel">どこで何が採れるか（採取 AP${GATHER_AP}）</h2>
+  <p>確率は昼・採り尽くしていないときの目安。地形ごとに、次のどれか1つが出る。</p>
+  <table class="gather">
+    <tr><th class="icon"></th><th>地形</th><th>出るもの（確率）</th></tr>
+    ${terrainRows}${waterRows}${specialRows}
+  </table>
+
+  <h3>出やすさが変わること</h3>
+  <div class="cols">
+    <ul>
+      <li><b>夜</b>は何か見つかる確率が${pct(NIGHT_GATHER_PENALTY)}下がる</li>
+      <li>同じマスで採るほど<b>採り尽くされ</b>、1段階ごとに−${pct(DEPLETION.penaltyPerLevel)}（最大${DEPLETION.max}段階）。${DEPLETION.recoverEveryTurns}ターンごとに1段階戻る</li>
+      <li>「何もなし」が${PITY_AFTER_DRY_STREAK}回続くと、次は必ず何か見つかる</li>
+      <li>最終局面では採取の成功率が半分になる</li>
+    </ul>
+    <ul>
+      <li><b>石斧</b>で木材が2倍、<b>釣竿</b>なら魚が1匹多い。漁師は砂浜で魚が${FISHER_FISH_MULTIPLIER}倍出やすい</li>
+      <li>強運は「何もなし」を引き直す。方向音痴は+${LOST_SENSE_GATHER}%、漂流者の知恵は砂浜で布とロープ片が出やすい</li>
+      <li>助けた漂流者が一緒にいると+${FOLLOWER_GATHER}%、幽霊の「守護」を受けたマスも出やすい</li>
+    </ul>
+  </div>
+
+  <h2 class="pixel">素材の逆引き</h2>
+  <div class="cols find">
+    ${findTable(findRows.slice(0, half))}
+    ${findTable(findRows.slice(half))}
+  </div>
+  <h2 class="pixel">はじめて遊ぶ人へのコツ</h2>
+  <div class="box">
+    <p>① まずは水場（泉・川）の場所を覚える。② 序盤の2日間は攻撃されないので、採取と探索で準備する。③ 行動順が後の人は、先に動く人の動きを読んで予約する。④ 密談で手を組むのも、裏切るのも自由。⑤ 「誰かが勝利目前！」と賞金首が出たら、全員で止めに行こう。</p>
+  </div>
+  <p class="foot">4 / 4</p>
+</section>`;
+
+document.getElementById('book')!.innerHTML = page1 + page2 + page3 + page4;

@@ -99,3 +99,12 @@ td.num { white-space: nowrap; text-align: center; }
 
 .traits table { font-size: 7.1pt; }
 .traits th, .traits td { padding: 0.35mm 1mm; }
+
+/* 4ページ目：採取表と逆引き */
+.gather td { font-size: 7.6pt; }
+.miss { color: #6b7590; }
+.find table { font-size: 7.3pt; }
+.find th { white-space: nowrap; }
+.find th, .find td { padding: 0.15mm 1mm; }
+.find td.icon img { width: 3.8mm; height: 3.8mm; }
+.gather th, .gather td { padding: 0.3mm 1.2mm; }
