@@ -269,8 +269,13 @@ describe('クラフトと建設', () => {
     for (const id of Object.keys(RECIPES) as RecipeId[]) {
       const state = arena();
       const recipe = RECIPES[id];
+      if (recipe.course) continue; // 別のテストで確かめる
       state.players[0].ap = 9;
-      for (const { item, count } of recipe.inputs[0]) give(state, 0, item, count);
+      state.players[0].job = recipe.job ?? null;
+      if (recipe.onTerrain) setHere(state, 0, recipe.onTerrain);
+      for (const { item, count } of recipe.inputs[0]) {
+        for (let left = count; left > 0; left -= 5) give(state, 0, item, Math.min(left, 5));
+      }
       const { events: e } = act(state, { type: 'craft', playerId: 0, recipe: id });
       expect(e[0]).toMatchObject({ type: 'crafted', recipe: id });
     }

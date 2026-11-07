@@ -4,7 +4,19 @@ import {
   createGame,
   DEFAULT_PLAN_SECONDS,
   cleanText,
+  createDraft,
+  describeProgress,
+  draftAuto,
+  draftPickItems,
+  draftPickJob,
+  draftPickStart,
+  draftReroll,
+  finishDraft,
+  getDraftView,
   getPlayerView,
+  useMindRead,
+  type DraftState,
+  type JobId,
   ITEMS,
   LETTER,
   MAP_CONFIG,
@@ -29,6 +41,10 @@ export interface Connection {
 
 export interface RoomOptions {
   stepMs?: number;
+  /** false ならキャラ選択を飛ばす（テスト用） */
+  useDraft?: boolean;
+  /** キャラ選択の1段階あたりの制限時間 */
+  draftSeconds?: number;
   /** 誰もいなくなったルームを消すまでの時間 */
   emptyRoomMs?: number;
   maxRooms?: number;
@@ -49,7 +65,8 @@ interface Member {
   ready: boolean;
 }
 
-type Stage = 'lobby' | 'planning' | 'resolving' | 'finished';
+type Stage = 'lobby' | 'draft' | 'planning' | 'resolving' | 'finished';
+const DEFAULT_DRAFT_SECONDS = 40;
 
 function cleanName(value: unknown, fallback: string): string {
   const name = typeof value === 'string' ? value.trim().slice(0, NAME_MAX) : '';
@@ -72,8 +89,28 @@ function cleanPlan(value: unknown): PlanAction[] | null {
   if (!Array.isArray(value) || value.length > MAX_PLAN_ACTIONS) return null;
   const plan: PlanAction[] = [];
   for (const raw of value as Record<string, unknown>[]) {
-    if (raw?.type === 'gather' || raw?.type === 'rest' || raw?.type === 'guard' || raw?.type === 'hide' || raw?.type === 'ambush') {
+    if (
+      raw?.type === 'gather' ||
+      raw?.type === 'rest' ||
+      raw?.type === 'guard' ||
+      raw?.type === 'hide' ||
+      raw?.type === 'ambush' ||
+      raw?.type === 'explore' ||
+      raw?.type === 'repair' ||
+      raw?.type === 'smash' ||
+      raw?.type === 'extinguish' ||
+      raw?.type === 'raftWork' ||
+      raw?.type === 'launch' ||
+      raw?.type === 'useRadio' ||
+      raw?.type === 'falseAlarm'
+    ) {
       plan.push({ type: raw.type });
+    } else if (raw?.type === 'heal' && Number.isInteger(raw.x) && Number.isInteger(raw.y)) {
+      const who = raw.who === undefined ? {} : Number.isInteger(raw.who) ? { who: raw.who as number } : null;
+      if (!who) return null;
+      plan.push({ type: 'heal', x: raw.x as number, y: raw.y as number, ...who });
+    } else if (raw?.type === 'scout' && Number.isInteger(raw.x) && Number.isInteger(raw.y)) {
+      plan.push({ type: 'scout', x: raw.x as number, y: raw.y as number });
     } else if (raw?.type === 'use' && typeof raw.item === 'string' && Object.hasOwn(ITEMS, raw.item)) {
       plan.push({ type: 'use', item: raw.item as 'fruit' });
     } else if (raw?.type === 'craft' && typeof raw.recipe === 'string' && Object.hasOwn(RECIPES, raw.recipe)) {
@@ -104,6 +141,7 @@ class Room {
   hostId = 0;
   members: Member[] = [];
   state: GameState | null = null;
+  draft: DraftState | null = null;
   seed = '';
   private nextMemberId = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -115,6 +153,8 @@ class Room {
     readonly setup: RoomSetup,
     private readonly stepMs: number,
     private readonly inviteOrigin: string,
+    private readonly useDraft: boolean = true,
+    private readonly draftSeconds: number = DEFAULT_DRAFT_SECONDS,
   ) {}
 
   addMember(name: string, connection: Connection): Member {
@@ -184,13 +224,68 @@ class Room {
     if (member.id !== this.hostId) return 'notHost';
     if (this.stage !== 'lobby') return 'alreadyStarted';
     this.seed = this.setup.seed ?? randomBytes(4).toString('hex');
-    this.state = createGame(this.seed, this.setup.players, {
-      mapSize: this.setup.mapSize,
-      seats: this.members.length,
-      names: this.members.map((m) => m.name),
-    });
-    this.beginPlanning();
+    if (!this.useDraft) {
+      this.state = createGame(this.seed, this.setup.players, {
+        mapSize: this.setup.mapSize,
+        seats: this.members.length,
+        names: this.members.map((m) => m.name),
+      });
+      this.beginPlanning();
+      return null;
+    }
+    this.draft = createDraft(this.seed, this.setup.players, this.members.length, this.setup.mapSize);
+    this.stage = 'draft';
+    this.armDraftTimer();
+    for (const m of this.members) this.sendCurrent(m);
     return null;
+  }
+
+  private armDraftTimer() {
+    this.clearTimer();
+    this.deadline = Date.now() + this.draftSeconds * 1000;
+    this.timer = setTimeout(() => {
+      // 時間切れの人の分を自動で決める
+      this.updateDraft(draftAuto(this.draft!));
+    }, this.draftSeconds * 1000);
+  }
+
+  private updateDraft(next: DraftState) {
+    this.draft = next;
+    if (next.phase === 'done') {
+      this.clearTimer();
+      this.state = createGame(this.seed, this.setup.players, {
+        mapSize: this.setup.mapSize,
+        setups: finishDraft(next),
+        names: this.members.map((m) => m.name),
+      });
+      this.draft = null;
+      this.beginPlanning();
+      return;
+    }
+    this.armDraftTimer();
+    for (const m of this.members) this.sendCurrent(m);
+  }
+
+  draftAction(member: Member, message: ClientMessage): ErrorCode | null {
+    if (this.stage !== 'draft' || !this.draft) return null;
+    const seat = this.seatOf(member);
+    let next: DraftState | null = null;
+    if (message.t === 'draftReroll') next = draftReroll(this.draft, seat, message.reroll === true);
+    else if (message.t === 'draftJob') next = draftPickJob(this.draft, seat, message.job as JobId);
+    else if (message.t === 'draftItems') next = draftPickItems(this.draft, seat, message.indexes);
+    else if (message.t === 'draftStart') next = draftPickStart(this.draft, seat, message.start);
+    if (!next) return 'badMessage';
+    this.updateDraft(next);
+    return null;
+  }
+
+  mindRead(member: Member, targetId: unknown) {
+    if (this.stage !== 'planning' || typeof targetId !== 'number') return;
+    const result = useMindRead(this.state!, this.seatOf(member), targetId);
+    if (!result) return;
+    this.state = result.state;
+    member.connection?.send({ t: 'mindReadResult', targetId, actions: this.members[targetId]?.plan ?? [] });
+    for (const m of this.members) m.connection?.send({ t: 'announce', events: result.events });
   }
 
   private beginPlanning() {
@@ -232,6 +327,13 @@ class Room {
     if (!connection) return;
     if (this.stage === 'lobby') {
       connection.send(this.lobbyMessage(member));
+    } else if (this.stage === 'draft') {
+      connection.send({
+        t: 'draft',
+        view: getDraftView(this.draft!, this.seatOf(member)),
+        names: this.members.map((m) => m.name),
+        remainingMs: Math.max(0, this.deadline - Date.now()),
+      });
     } else if (this.stage === 'planning') {
       connection.send({
         t: 'planning',
@@ -254,9 +356,19 @@ class Room {
       t: 'result',
       winnerId,
       winnerName: winnerId === null ? null : this.state!.players[winnerId].name,
+      reason: this.state!.victoryReason,
       seed: this.seed,
       hostId: this.members.findIndex((m) => m.id === this.hostId),
       youAreHost: member.id === this.hostId,
+      players: this.state!.players.map((p) => ({
+        id: p.id,
+        name: p.name,
+        job: p.job,
+        extraJob: p.extraJob,
+        publicTrait: p.publicTrait,
+        secretTrait: p.secretTrait,
+        goals: describeProgress(this.state!, p),
+      })),
     };
   }
 
@@ -358,6 +470,7 @@ class Room {
     if (this.stage !== 'finished') return null;
     this.stage = 'lobby';
     this.state = null;
+    this.draft = null;
     this.seed = '';
     for (const m of this.members) {
       m.plan = [];
@@ -394,12 +507,16 @@ export class RoomManager {
   private readonly sessions = new Map<Connection, Session>();
   private readonly expiry = new Map<Room, ReturnType<typeof setTimeout>>();
   private readonly stepMs: number;
+  private readonly useDraft: boolean;
+  private readonly draftSeconds: number;
   private readonly emptyRoomMs: number;
   private readonly maxRooms: number;
   private readonly inviteOrigin: string;
 
   constructor(options: RoomOptions = {}) {
     this.stepMs = options.stepMs ?? 500;
+    this.useDraft = options.useDraft ?? true;
+    this.draftSeconds = options.draftSeconds ?? DEFAULT_DRAFT_SECONDS;
     this.emptyRoomMs = options.emptyRoomMs ?? 30 * 60 * 1000;
     this.maxRooms = options.maxRooms ?? 200;
     this.inviteOrigin = options.inviteOrigin ?? '';
@@ -418,7 +535,14 @@ export class RoomManager {
       case 'create': {
         if (session) return;
         if (this.rooms.size >= this.maxRooms) return fail('tooManyRooms');
-        const room = new Room(this.newCode(), cleanSetup(message.setup), this.stepMs, this.inviteOrigin);
+        const room = new Room(
+          this.newCode(),
+          cleanSetup(message.setup),
+          this.stepMs,
+          this.inviteOrigin,
+          this.useDraft,
+          this.draftSeconds,
+        );
         this.rooms.set(room.code, room);
         this.enter(room, room.addMember(message.name, connection), connection);
         room.sendLobby();
@@ -455,6 +579,15 @@ export class RoomManager {
         break;
       case 'plan':
         error = room.setPlan(member, message.actions, message.ready);
+        break;
+      case 'draftReroll':
+      case 'draftJob':
+      case 'draftItems':
+      case 'draftStart':
+        error = room.draftAction(member, message);
+        break;
+      case 'mindRead':
+        room.mindRead(member, message.targetId);
         break;
       case 'whisperRespond':
         room.whisper(member, message.id, { accept: message.accept === true });

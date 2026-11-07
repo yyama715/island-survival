@@ -1,5 +1,17 @@
 // 出来事を文章にする。
-import { ITEMS, RECIPES, TERRAIN, type GameEvent, type ItemStack, type PlanAction, type TerrainId } from '../core/index';
+import { ITEMS, RECIPES, TERRAIN, TRAITS, type GameEvent, type ItemStack, type PlanAction, type TerrainId, type VictoryReason } from '../core/index';
+
+export const VICTORY_TEXT: Record<VictoryReason, string> = {
+  lastStanding: '最後の1人として生き残った',
+  fisher: '島の主を釣り上げて守り抜いた',
+  carpenter: '砦を守り抜いた',
+  doctor: '人々を治療し、7日目の朝を迎えた',
+  soldier: '戦果を挙げた',
+  explorer: '島を踏破した',
+  cook: '島のフルコースを完成させた',
+  raft: 'いかだで島を脱出した',
+  ship: '救助船に乗った',
+};
 
 function stacksText(stacks: ItemStack[]): string {
   return stacks.map(({ item, count }) => (count > 1 ? `${ITEMS[item].name}×${count}` : ITEMS[item].name)).join('、');
@@ -82,6 +94,53 @@ export function describeEvent(event: GameEvent, nameOf: (id: number) => string, 
     }
     case 'bleedStopped':
       return '血が自然に止まった';
+    case 'healed':
+      if (event.targetId === null) return '治療する相手がいなかった';
+      return `${nameOf(event.targetId)}を治療した（HP+${event.hp}${event.maxHpUp ? '、最大HP+1' : ''}）`;
+    case 'wasHealed':
+      return `治療してもらった（HP+${event.hp}${event.maxHpUp ? '、最大HP+1' : ''}）`;
+    case 'explored':
+      return '周りを探索した（このターンは視界+1）';
+    case 'repaired':
+      return `砦を修理した（耐久${event.hp}）`;
+    case 'smashed':
+      return event.destroyed
+        ? `${event.kind === 'fort' ? '砦' : 'いかだ'}を壊した`
+        : `${event.kind === 'fort' ? '砦' : 'いかだ'}を攻撃した（耐久${event.hp}）`;
+    case 'raftWorked':
+      return event.complete
+        ? 'いかだが完成した！'
+        : `いかだに素材を運んだ（${stacksText(event.stored) || 'なし'}）`;
+    case 'radioFixed':
+      return '無線機を直した。これで救助を呼べる';
+    case 'scouted':
+      return '遠くの様子を見た';
+    case 'shipCalled':
+      return `救助船を呼んだ。ターン${event.arrivesTurn}に到着する（地図に船の目印）`;
+    case 'traitRevealed':
+      return `${nameOf(event.playerId)}の秘密特性「${TRAITS[event.trait].name}」が発動した！`;
+    case 'nearVictory':
+      return '誰かが勝利目前だ！';
+    case 'lordCaught':
+      return '島の主が釣り上げられた！';
+    case 'fortCompleted':
+      return '砦が完成した！';
+    case 'fortDestroyed':
+      return '砦が壊された！';
+    case 'smokeLit':
+      return '狼煙が上がった！ 救助船が来る';
+    case 'smokeOut':
+      return '狼煙が消された';
+    case 'shipSoon':
+      return '救助船が見えた！ 次のターンに到着する（地図に目印）';
+    case 'shipArrived':
+      return '救助船が着いた！ 最初に入った人が乗れる';
+    case 'shipLeft':
+      return '救助船は去っていった';
+    case 'playerRevived':
+      return `${nameOf(event.playerId)}が執念で戻ってきた！`;
+    case 'victory':
+      return `${nameOf(event.playerId)}が${VICTORY_TEXT[event.reason]}！`;
     case 'fatigued':
       return '疲れが出てきた（次のターンはAP−1）';
     case 'rested':
@@ -148,6 +207,16 @@ export function describePlanAction(action: PlanAction, terrain: TerrainId | null
   if (action.type === 'hide') return '隠れる';
   if (action.type === 'ambush') return 'このマスで待ち伏せ';
   if (action.type === 'letter') return '手紙を置く';
+  if (action.type === 'heal') return `${target(action.who)}を治療`;
+  if (action.type === 'explore') return '探索';
+  if (action.type === 'repair') return '砦を修理';
+  if (action.type === 'smash') return '建物を壊す';
+  if (action.type === 'extinguish') return '狼煙を消す';
+  if (action.type === 'raftWork') return 'いかだに素材を運ぶ';
+  if (action.type === 'launch') return 'いかだで脱出';
+  if (action.type === 'useRadio') return '無線機を使う';
+  if (action.type === 'scout') return '遠くを見る（鷹の目）';
+  if (action.type === 'falseAlarm') return '偽の知らせを出す';
   if (action.type === 'discard') return `${ITEMS[action.item].name}を捨てる`;
   const where = terrain ? TERRAIN[terrain].name : '霧の中';
   return `${DIRECTION_NAME[action.direction]}へ（${where}）`;

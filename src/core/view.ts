@@ -4,11 +4,13 @@ import {
   ATTACK_AP,
   BOTTLE_ITEM,
   EARLY_PROTECTION_TURNS,
+  EXPLORE_AP,
   GATHER_AP,
   GUARD_AP,
+  HEAL_AP,
   HIDE_AP,
-  INVENTORY_SLOTS,
   ITEMS,
+  REPAIR_AP,
   LETTER,
   LETTER_AP,
   MAX_PLAN_ACTIONS,
@@ -18,8 +20,13 @@ import {
   THROW_ITEM,
   WHISPER_AP,
 } from './data';
-import { cellIndex, dayOf, hasItem, isWeak, phaseOf, visibleCells, visionRadius } from './game';
+import { cellIndex, dayOf, isWeak, phaseOf, playerVision, recipeAp, seesNames, slotsOf, visibleCells } from './game';
+import { RAFT, SMOKE } from './roles';
+import { courseIngredients, describeProgress, type GoalLine } from './victory';
 import type {
+  JobId,
+  TraitId,
+  VictoryReason,
   Direction,
   GameEvent,
   GameState,
@@ -97,8 +104,31 @@ export interface PlayerView {
   whispers: WhisperView[];
   /** 6.1 視界の中で「ひそひそ話している」2人のマス */
   whisperSeen: { x: number; y: number }[];
-  /** 全プレイヤーの公開情報（職業の公開はマイルストーン4で追加） */
-  roster: { id: number; name: string; alive: boolean }[];
+  /** 全プレイヤーの公開情報 */
+  roster: {
+    id: number;
+    name: string;
+    alive: boolean;
+    job: JobId | null;
+    publicTrait: TraitId | null;
+    /** 発動して公開された秘密特性 */
+    revealedTrait: TraitId | null;
+  }[];
+  /** 本人だけが知っている情報 */
+  secret: { trait: TraitId | null; extraJob: JobId | null; used: boolean; radioFixed: boolean };
+  /** 勝利条件の進み具合（本人にだけ） */
+  goals: GoalLine[];
+  /** 7.4 地図に出す公開の目印 */
+  marks: { x: number; y: number; kind: 'smoke' | 'ship' | 'shipComing' }[];
+  victoryReason: VictoryReason | null;
+  maxHp: number;
+  slots: number;
+  /** 今日の人望はもう使った */
+  freeWhisperSpent: boolean;
+  /** 今日の鷹の目はもう使った */
+  scoutSpent: boolean;
+  /** このターンの健脚はもう使った */
+  freeMoveSpent: boolean;
   /** 8.1 全員分の行動順と行動値は計画フェーズの前に公開する */
   initiative: InitiativeEntry[];
   finished: boolean;
@@ -110,6 +140,10 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
   const { width, height } = state.map;
   const phase = phaseOf(state.turn);
   const visible = new Set(me.alive ? visibleCells(state, me) : []);
+  // 4.3 鷹の目で見ているマス
+  for (const scout of state.scouts) {
+    if (scout.playerId === me.id && scout.untilTurn >= state.turn) for (const cell of scout.cells) visible.add(cell);
+  }
 
   const cells: CellView[] = [];
   for (let y = 0; y < height; y++) {
@@ -122,14 +156,15 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
         for (const other of state.players) {
           if (!other.alive || other.x !== x || other.y !== y) continue;
           if (other.id === me.id) figures.push({ kind: 'self', id: other.id, name: other.name });
-          // 隠れている人は同じマスにいるときしか見えない
-          else if (other.hidden && (other.x !== me.x || other.y !== me.y)) continue;
-          // 3.3 松明を持つ人は夜でも誰なのか分かる
-          else if (phase === 'night' && !hasItem(other, 'torch')) figures.push({ kind: 'shadow' });
+          // 隠れている人と死んだふりの人は、同じマスにいるときしか見えない
+          else if ((other.hidden || other.playingDead) && (other.x !== me.x || other.y !== me.y)) continue;
+          // 3.3 松明を持つ人や夜目の人には、夜でも誰なのか分かる
+          else if (!seesNames(state, me, other)) figures.push({ kind: 'shadow' });
           else figures.push({ kind: 'player', id: other.id, name: other.name });
         }
       }
       const structure = state.structures[index];
+      // 4.3 警戒中の人にも他人の罠は見えない。見えるのは置いた本人だけ
       const seesStructure = isVisible && structure && (structure.kind !== 'trap' || structure.ownerId === me.id);
       cells.push({
         x,
@@ -151,17 +186,31 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
       id: w.id,
       incoming: w.to === me.id,
       status: w.status,
-      withId: phase === 'night' ? null : w.from === me.id ? w.to : w.from,
+      withId: seesNames(state, me, state.players[w.from === me.id ? w.to : w.from]) ? (w.from === me.id ? w.to : w.from) : null,
       messages: w.messages.map((m) => ({ mine: m.from === me.id, text: m.text })),
     }));
   const whisperSeen = state.whispers.flatMap((w) => {
     if (w.status !== 'open' || w.from === me.id || w.to === me.id) return [];
     const a = state.players[w.from];
     const b = state.players[w.to];
+    // 4.3 二枚舌は密談しても周りに表示されない
+    if (a.secretTrait === 'two_tongues' || b.secretTrait === 'two_tongues') return [];
     const seesBoth =
       visible.has(cellIndex(state, a.x, a.y)) && visible.has(cellIndex(state, b.x, b.y)) && !a.hidden && !b.hidden;
     return seesBoth ? [{ x: a.x, y: a.y }, { x: b.x, y: b.y }] : [];
   });
+
+  // 7.4 狼煙は全員に見える。船は呼んだ本人と、到着の1ターン前からの全員に見える
+  const marks: PlayerView['marks'] = [];
+  for (const [index, structure] of Object.entries(state.structures)) {
+    if (structure.kind === 'smoke') {
+      marks.push({ x: Number(index) % width, y: Math.floor(Number(index) / width), kind: 'smoke' });
+    }
+  }
+  const ship = state.ship;
+  if (ship && !ship.gone && (ship.callerId === me.id || state.turn >= ship.arrivesTurn - 1)) {
+    marks.push({ x: ship.x, y: ship.y, kind: state.turn >= ship.arrivesTurn ? 'ship' : 'shipComing' });
+  }
 
   return {
     width,
@@ -170,6 +219,15 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
     day: dayOf(state.turn),
     phase,
     cells,
+    secret: { trait: me.secretTrait, extraJob: me.extraJob, used: me.secretUsed, radioFixed: me.radioFixed },
+    goals: describeProgress(state, me),
+    marks,
+    victoryReason: state.victoryReason,
+    maxHp: me.maxHp,
+    slots: slotsOf(me),
+    freeWhisperSpent: me.freeWhisperDay === dayOf(state.turn),
+    scoutSpent: me.scoutDay === dayOf(state.turn),
+    freeMoveSpent: me.freeMoveTurn === state.turn,
     me: {
       id: me.id,
       name: me.name,
@@ -181,7 +239,7 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
       inventory: me.inventory.map((s) => ({ ...s })),
       dryStreak: me.dryStreak,
       terrain: terrainHere,
-      visionRadius: visionRadius(terrainHere, phase, hasItem(me, 'torch')),
+      visionRadius: playerVision(state, me),
       hunger: me.hunger,
       water: me.water,
       poisoned: me.poisonTurns > 0,
@@ -193,8 +251,18 @@ export function getPlayerView(state: GameState, playerId: number): PlayerView {
     letters: me.alive ? (state.letters[cellIndex(state, me.x, me.y)] ?? []).map((l) => l.text) : [],
     whispers,
     whisperSeen,
-    roster: state.players.map((p) => ({ id: p.id, name: p.name, alive: p.alive })),
-    initiative: state.initiative.map((entry) => ({ ...entry })),
+    roster: state.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      // 死んだふりの人は、本人以外には脱落に見える
+      alive: p.alive && (!p.playingDead || p.id === me.id),
+      job: p.job,
+      publicTrait: p.publicTrait,
+      revealedTrait: p.secretRevealed ? p.secretTrait : null,
+    })),
+    initiative: state.initiative
+      .filter((entry) => entry.playerId === me.id || !state.players[entry.playerId].playingDead)
+      .map((entry) => ({ ...entry })),
     finished: state.finished,
     winnerId: state.winnerId,
   };
@@ -227,7 +295,11 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
   let { x, y, ap } = view.me;
   let uncertain = false;
   let ok = view.me.alive && plan.length <= MAX_PLAN_ACTIONS;
+  const me = view.roster.find((p) => p.id === view.me.id);
   let attacks = 0;
+  let freeWhisperUsed = view.freeWhisperSpent;
+  let freeMoveUsed = false;
+  let scouted = view.scoutSpent;
   let moved = false;
   let ambushes = 0;
   const owned = new Map<ItemId, number>();
@@ -266,13 +338,18 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
         ok = false;
         continue;
       }
-      ap -= recipe.ap;
-      const inputs = recipe.inputs.find((set) => set.every(({ item, count }) => (owned.get(item) ?? 0) >= count));
+      ap -= recipeAp(recipe.ap, me?.job ?? null);
+      if (recipe.job && me?.job !== recipe.job && view.secret.extraJob !== recipe.job) ok = false;
+      if (recipe.onTerrain && terrainAt(x, y) && terrainAt(x, y) !== recipe.onTerrain) ok = false;
+      if (recipe.builds === 'smoke' && (view.turn < SMOKE.firstTurn || view.turn > SMOKE.lastTurn)) ok = false;
+      const inputs = recipe.course
+        ? courseIngredients(owned)
+        : recipe.inputs.find((set) => set.every(({ item, count }) => (owned.get(item) ?? 0) >= count));
       if (!inputs) ok = false;
       else for (const { item, count } of inputs) spend(item, count);
       if (recipe.output) add(recipe.output.item, recipe.output.count);
       if (recipe.builds && view.cells[y * view.width + x].structure) ok = false;
-      if (recipe.output && slotsNeeded(owned) > INVENTORY_SLOTS) ok = false;
+      if (recipe.output && slotsNeeded(owned) > view.slots) ok = false;
     } else if (action.type === 'rest') {
       if (ap <= 0) ok = false;
       ap = 0;
@@ -292,8 +369,45 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       if (!action.text.trim()) ok = false;
       spend(LETTER.material, 1);
     } else if (action.type === 'whisper') {
-      ap -= WHISPER_AP;
+      // 4.3 人望：1日に1回はAPを使わない
+      if (me?.publicTrait === 'respected' && !freeWhisperUsed) freeWhisperUsed = true;
+      else ap -= WHISPER_AP;
       if (!canTarget({ ...view, turn: Math.max(view.turn, EARLY_PROTECTION_TURNS + 1) }, action)) ok = false;
+    } else if (action.type === 'heal') {
+      ap -= HEAL_AP;
+      if (me?.job !== 'doctor' && view.secret.extraJob !== 'doctor') ok = false;
+      const here = view.cells[action.y * view.width + action.x];
+      if (!here || here.x !== x || here.y !== y || !canTarget({ ...view, turn: Math.max(view.turn, EARLY_PROTECTION_TURNS + 1) }, action)) ok = false;
+    } else if (action.type === 'explore') {
+      ap -= EXPLORE_AP;
+    } else if (action.type === 'repair') {
+      ap -= REPAIR_AP;
+      if (me?.job !== 'carpenter' && view.secret.extraJob !== 'carpenter') ok = false;
+      if (view.cells[y * view.width + x].structure !== 'fort') ok = false;
+    } else if (action.type === 'smash') {
+      ap -= ATTACK_AP;
+      const structure = view.cells[y * view.width + x].structure;
+      if (structure !== 'fort' && structure !== 'raft') ok = false;
+    } else if (action.type === 'extinguish') {
+      ap -= SMOKE.extinguishAp;
+      if (view.cells[y * view.width + x].structure !== 'smoke') ok = false;
+    } else if (action.type === 'raftWork') {
+      ap -= recipeAp(RAFT.ap, me?.job ?? null);
+      const here = terrainAt(x, y);
+      if (here && here !== 'beach') ok = false;
+    } else if (action.type === 'launch') {
+      ap -= 1;
+      if (view.cells[y * view.width + x].structure !== 'raft') ok = false;
+    } else if (action.type === 'useRadio') {
+      if (view.secret.trait !== 'radio' || view.secret.used) ok = false;
+      ap -= view.secret.radioFixed ? SMOKE.radioCallAp : SMOKE.radioRepairAp;
+      if (!view.secret.radioFixed && terrainAt(x, y) !== 'mountain') ok = false;
+    } else if (action.type === 'scout') {
+      if (me?.publicTrait !== 'hawk_eye' || scouted) ok = false;
+      scouted = true;
+      if (!view.cells[action.y * view.width + action.x] || view.cells[action.y * view.width + action.x].x !== action.x) ok = false;
+    } else if (action.type === 'falseAlarm') {
+      if (view.secret.trait !== 'false_alarm' || view.secret.used) ok = false;
     } else {
       moved = true;
       if (ambushes > 0) ok = false;
@@ -306,10 +420,15 @@ export function projectPlan(view: PlayerView, plan: readonly PlanAction[]): Plan
       }
       const known = view.cells[ny * view.width + nx].terrain;
       if (known === null) uncertain = true;
-      const cost = known === null ? 1 : TERRAIN[known].moveCost;
+      let cost = known === null ? 1 : TERRAIN[known].moveCost;
       if (cost === null) {
         ok = false;
         continue;
+      }
+      // 4.3 健脚：草原と砂浜の移動が1ターンに1回無料
+      if (me?.publicTrait === 'swift_feet' && !freeMoveUsed && !view.freeMoveSpent && (known === 'grass' || known === 'beach')) {
+        freeMoveUsed = true;
+        cost = 0;
       }
       ap -= cost;
       x = nx;
@@ -404,7 +523,25 @@ export function replayFor(viewerId: number, previous: GameState, steps: readonly
           }
           break;
         }
+        // 全員に公開される出来事
+        case 'traitRevealed':
+        case 'nearVictory':
+        case 'lordCaught':
+        case 'fortCompleted':
+        case 'fortDestroyed':
+        case 'smokeLit':
+        case 'smokeOut':
+        case 'shipSoon':
+        case 'shipArrived':
+        case 'shipLeft':
+        case 'playerRevived':
+        case 'victory':
+          events.push(event);
+          changed = true;
+          break;
         // 手番と関係なく本人にだけ届くもの
+        case 'wasHealed':
+        case 'shipCalled':
         case 'statusDamage':
         case 'bleedStopped':
         case 'foundOut':

@@ -1,5 +1,17 @@
 // サーバーと画面のあいだで送るメッセージ。
-import type { MapSize, PlanAction, PlayerView, ReplayStep, WhisperView } from '../core/index';
+import type {
+  DraftView,
+  GameEvent,
+  GoalLine,
+  JobId,
+  MapSize,
+  PlanAction,
+  PlayerView,
+  ReplayStep,
+  TraitId,
+  VictoryReason,
+  WhisperView,
+} from '../core/index';
 
 export interface RoomSetup {
   players: number;
@@ -16,6 +28,11 @@ export type ClientMessage =
   | { t: 'resume'; token: string }
   | { t: 'start' }
   | { t: 'plan'; actions: PlanAction[]; ready: boolean }
+  | { t: 'draftReroll'; reroll: boolean }
+  | { t: 'draftJob'; job: JobId }
+  | { t: 'draftItems'; indexes: number[] }
+  | { t: 'draftStart'; start: number }
+  | { t: 'mindRead'; targetId: number }
   | { t: 'whisperRespond'; id: number; accept: boolean }
   | { t: 'whisperSend'; id: number; text: string }
   | { t: 'backToLobby' }
@@ -67,12 +84,36 @@ export type ServerMessage =
       status: PlanStatus[];
     }
   | { t: 'status'; status: PlanStatus[] }
+  /** 4.1 キャラ選択 */
+  | { t: 'draft'; view: DraftView; names: string[]; remainingMs: number }
+  /** 4.3 読心術で覗いた予約（使った本人にだけ届く） */
+  | { t: 'mindReadResult'; targetId: number; actions: PlanAction[] }
+  /** 計画フェーズ中に全員へ知らせる出来事 */
+  | { t: 'announce'; events: GameEvent[] }
   /** 計画フェーズ中の密談の変化 */
   | { t: 'whisperUpdate'; whispers: WhisperView[]; whisperSeen: { x: number; y: number }[] }
   /** 解決フェーズの再生。全員の再生が終わる頃に次のメッセージが届く */
   | { t: 'replay'; steps: ReplayStep[]; stepMs: number }
   /** 解決の再生中に再接続した人へ、盤面だけ渡す */
   | { t: 'waiting'; view: PlayerView; status: PlanStatus[] }
-  | { t: 'result'; winnerId: number | null; winnerName: string | null; seed: string; hostId: number; youAreHost: boolean }
+  | {
+      t: 'result';
+      winnerId: number | null;
+      winnerName: string | null;
+      reason: VictoryReason | null;
+      seed: string;
+      hostId: number;
+      youAreHost: boolean;
+      /** 10.1 リザルトでは全員の秘密特性と進み具合を公開する */
+      players: {
+        id: number;
+        name: string;
+        job: JobId | null;
+        extraJob: JobId | null;
+        publicTrait: TraitId | null;
+        secretTrait: TraitId | null;
+        goals: GoalLine[];
+      }[];
+    }
   | { t: 'left' }
   | { t: 'error'; code: ErrorCode; message: string };

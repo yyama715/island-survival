@@ -1,5 +1,5 @@
 // 調整する数値はここに集める。章番号は docs/island-survival-spec.md のもの。
-import type { ItemId, ItemStack, MapSize, RecipeId, SpecialTerrainId, StructureKind, TerrainId } from './types';
+import type { ItemId, ItemStack, JobId, MapSize, RecipeId, SpecialTerrainId, StructureKind, TerrainId } from './types';
 
 export interface MapConfig {
   size: number;
@@ -70,6 +70,19 @@ export const AMBUSH_AP = 1;
 export const LETTER_AP = 1;
 export const WHISPER_AP = 1;
 export const REST_HUT_MULTIPLIER = 2;
+export const HEAL_AP = 1;
+export const EXPLORE_AP = 1;
+export const REPAIR_AP = 1;
+
+// 4章 職業と特性の数値（初期案を含む）
+export const SOLDIER = { hit: 0.1, damage: 1 };
+export const FISHER_FISH_MULTIPLIER = 2;
+export const BIG_EATER_HP = 2;
+export const EARLY_RISER_BONUS = 3;
+export const LOST_SENSE_DRIFT = 0.1;
+export const LOST_SENSE_GATHER = 10;
+export const TENACITY_HP = 3;
+export const MAP_FRAGMENT_RADIUS = 2;
 
 // 6.1 密談と手紙
 export const WHISPER = { maxMessagesEach: 3, maxLength: 50 };
@@ -86,12 +99,23 @@ export interface RecipeDef {
   output?: ItemStack;
   builds?: StructureKind;
   summary: string;
+  /** この職業だけが作れる */
+  job?: JobId;
+  /** 建てられる地形 */
+  onTerrain?: TerrainId;
+  /** 料理人のフルコース。素材は6ジャンルの食材 */
+  course?: boolean;
 }
 
 const need = (...pairs: [ItemId, number][]) => pairs.map(([item, count]) => ({ item, count }));
 
-// 7.3 クラフトレシピ。勝利ルートに直結するもの（狼煙、いかだ、薬、砦、フルコース）はマイルストーン4で足す
+// 7.3 クラフトレシピ。いかだは素材を少しずつ運ぶので raftWork で作る
 export const RECIPES: Record<RecipeId, RecipeDef> = {
+  medicine: { name: '薬', ap: 1, inputs: [need(['medicinal_herb', 1], ['water', 1])], output: { item: 'medicine', count: 1 }, job: 'doctor', summary: '使った人のHP+3。誰が使っても医師の治療回数に数える' },
+  fort: { name: '砦', ap: 3, inputs: [need(['wood', 8], ['stone', 4], ['rope', 2])], builds: 'fort', job: 'carpenter', summary: '耐久10。中にいると防御+2。修理できる' },
+  full_course: { name: '島のフルコース', ap: 2, inputs: [[]], output: { item: 'full_course', count: 1 }, job: 'cook', course: true, summary: '6ジャンルの食材を各1つ。食べると特殊勝利' },
+  smoke: { name: '狼煙', ap: 3, inputs: [need(['wood', 5], ['flint', 1]), need(['wood', 5], ['matches', 1])], builds: 'smoke', onTerrain: 'mountain', summary: '山で上げる（3〜9日目）。3ターン後に救助船が砂浜へ来る' },
+  backpack: { name: 'リュック', ap: 2, inputs: [need(['cloth', 3], ['rope', 1])], output: { item: 'backpack', count: 1 }, summary: '所持枠+4' },
   stone_knife: { name: '石のナイフ', ap: 1, inputs: [need(['stone', 1], ['wood', 1])], output: { item: 'stone_knife', count: 1 }, summary: '攻撃 1d3+1' },
   stone_axe: { name: '石斧', ap: 2, inputs: [need(['stone', 2], ['wood', 1])], output: { item: 'stone_axe', count: 1 }, summary: '攻撃 1d3+2、木材の採取が倍' },
   spear: { name: '槍', ap: 2, inputs: [need(['wood', 2], ['stone', 1])], output: { item: 'spear', count: 1 }, summary: '隣接8マスから攻撃 1d3+2' },
@@ -103,7 +127,7 @@ export const RECIPES: Record<RecipeId, RecipeDef> = {
   sail: { name: '帆', ap: 2, inputs: [need(['cloth', 2], ['wood', 1])], output: { item: 'sail', count: 1 }, summary: 'いかだの素材' },
   fishing_rod: { name: '釣竿', ap: 1, inputs: [need(['wood', 1], ['rope', 1])], output: { item: 'fishing_rod', count: 1 }, summary: '砂浜と川で魚が取れる。釣り糸より多い' },
   trap: { name: '罠', ap: 2, inputs: [need(['wood', 2], ['grass', 1])], builds: 'trap', summary: 'このマスに入った他人にHP−2＋足止め' },
-  hut: { name: '小屋', ap: 3, inputs: [need(['wood', 4], ['grass', 2])], builds: 'hut', summary: '休息の回復が倍' },
+  hut: { name: '小屋', ap: 3, inputs: [need(['wood', 4], ['grass', 2]), need(['wood', 2], ['grass', 2], ['nails', 1])], builds: 'hut', summary: '休息の回復が倍。釘があれば木材が少なく済む' },
 };
 
 // 8章 戦闘。攻撃はAP1で1ターンに1回まで。残りAPで届くなら相手を追いかける
@@ -147,6 +171,7 @@ export const UNARMED: WeaponDef = { range: 0, hit: 0.7, rollsD3: false, bonus: 1
 export const WEAPONS: Partial<Record<ItemId, WeaponDef>> = {
   stone_knife: { range: 0, hit: 0.7, rollsD3: true, bonus: 1, bleed: 1 },
   stone_axe: { range: 0, hit: 0.7, rollsD3: true, bonus: 2, bleed: 1 },
+  survival_knife: { range: 0, hit: 0.7, rollsD3: true, bonus: 1, bleed: 1 },
   spear: { range: 1, hit: 0.6, rollsD3: true, bonus: 2, bleed: 0.5 },
   bow: { range: 2, hit: 0.6, rollsD3: false, bonus: 2, ranged: true, bleed: 0.5 },
 };
@@ -321,6 +346,14 @@ export const SPECIAL_LOOT: Record<SpecialTerrainId, ItemRoll[]> = {
 };
 
 export interface ItemUse {
+  /** 食べ物（料理人や鍋で回復量が増える） */
+  food?: boolean;
+  /** 魚と肉（塩で回復量が増える） */
+  salted?: boolean;
+  /** 中毒も治す */
+  curesPoison?: boolean;
+  /** 食べると特殊勝利 */
+  winsGame?: boolean;
   hunger?: number;
   water?: number;
   hp?: number;
@@ -335,23 +368,37 @@ export interface ItemUse {
 // 回復量は 7.1 にあるもの以外は初期案
 export const ITEMS: Record<ItemId, { name: string; use?: ItemUse }> = {
   wood: { name: '木材' },
-  fruit: { name: '果実', use: { hunger: 2 } },
-  mushroom: { name: 'キノコ', use: { hunger: 3, risky: true } },
-  honey: { name: '蜂蜜', use: { hunger: 2 } },
+  fruit: { name: '果実', use: { hunger: 2, food: true } },
+  mushroom: { name: 'キノコ', use: { hunger: 3, risky: true, food: true } },
+  honey: { name: '蜂蜜', use: { hunger: 2, food: true } },
   medicinal_herb: { name: '薬草' },
-  shell: { name: '貝', use: { hunger: 2, leaves: 'shell_husk' } },
+  shell: { name: '貝', use: { hunger: 2, leaves: 'shell_husk', food: true } },
+  island_lord: { name: '島の主' },
+  dried_fish: { name: '干し魚', use: { hunger: 3, food: true, salted: true } },
+  nails: { name: '釘' },
+  antiseptic: { name: '消毒液', use: { hp: 1, stopsBleeding: true, curesPoison: true } },
+  medicine: { name: '薬', use: { hp: 3 } },
+  compass: { name: 'コンパス' },
+  map_fragment: { name: '地図の断片' },
+  binoculars: { name: '双眼鏡' },
+  pot: { name: '鍋' },
+  salt: { name: '塩' },
+  matches: { name: 'マッチ' },
+  survival_knife: { name: 'サバイバルナイフ' },
+  backpack: { name: 'リュック' },
+  full_course: { name: '島のフルコース', use: { winsGame: true } },
   shell_husk: { name: '貝殻' },
   cloth: { name: '布' },
   rope_scrap: { name: 'ロープ片' },
   bottle: { name: '瓶' },
-  fish: { name: '魚', use: { hunger: 3 } },
+  fish: { name: '魚', use: { hunger: 3, food: true, salted: true } },
   wreck_part: { name: '難破船の部品' },
   grass: { name: '草' },
-  herb: { name: '香草', use: { hunger: 1 } },
-  nut: { name: '木の実', use: { hunger: 1 } },
+  herb: { name: '香草', use: { hunger: 1, food: true } },
+  nut: { name: '木の実', use: { hunger: 1, food: true } },
   stone: { name: '石' },
   flint: { name: '火打石' },
-  egg: { name: '鳥の卵', use: { hunger: 2 } },
+  egg: { name: '鳥の卵', use: { hunger: 2, food: true, salted: true } },
   ore: { name: '鉱石' },
   big_feather: { name: '大羽根' },
   water: { name: '淡水', use: { water: 3 } },

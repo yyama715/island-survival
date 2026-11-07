@@ -45,9 +45,82 @@ export type ItemId =
   | 'shell_husk'
   | 'fishing_line'
   | 'fishing_rod'
-  | 'canteen';
+  | 'canteen'
+  | 'island_lord'
+  | 'dried_fish'
+  | 'nails'
+  | 'antiseptic'
+  | 'medicine'
+  | 'compass'
+  | 'map_fragment'
+  | 'binoculars'
+  | 'pot'
+  | 'salt'
+  | 'matches'
+  | 'survival_knife'
+  | 'backpack'
+  | 'full_course';
+
+export type JobId = 'fisher' | 'carpenter' | 'doctor' | 'soldier' | 'explorer' | 'cook';
+
+export type TraitId =
+  // 公開特性
+  | 'swift_feet'
+  | 'iron_stomach'
+  | 'big_eater'
+  | 'night_eyes'
+  | 'lucky'
+  | 'heat_proof'
+  | 'swimmer'
+  | 'respected'
+  | 'hawk_eye'
+  | 'island_memory'
+  // 秘密特性
+  | 'play_dead'
+  | 'hidden_purse'
+  | 'mind_reader'
+  | 'lost_sense'
+  | 'radio'
+  | 'two_tongues'
+  | 'trap_master'
+  | 'early_riser'
+  | 'pickpocket'
+  | 'beast_friend'
+  | 'false_alarm'
+  | 'tenacity'
+  | 'other_face';
+
+export type Rarity = 'common' | 'rare' | 'super' | 'legend';
+
+/** ゲーム開始時に決まったキャラクター */
+export interface PlayerSetup {
+  job: JobId;
+  publicTrait: TraitId;
+  secretTrait: TraitId;
+  /** 「もう一つの顔」で秘密に持つ職業 */
+  extraJob?: JobId;
+  items: ItemStack[];
+  /** 選んだ初期位置の番号（map.starts の添字） */
+  start: number;
+}
+
+export type VictoryReason =
+  | 'lastStanding'
+  | 'fisher'
+  | 'carpenter'
+  | 'doctor'
+  | 'soldier'
+  | 'explorer'
+  | 'cook'
+  | 'raft'
+  | 'ship';
 
 export type RecipeId =
+  | 'medicine'
+  | 'fort'
+  | 'full_course'
+  | 'smoke'
+  | 'backpack'
   | 'stone_knife'
   | 'stone_axe'
   | 'spear'
@@ -61,11 +134,42 @@ export type RecipeId =
   | 'trap'
   | 'hut';
 
-export type StructureKind = 'hut' | 'trap';
+export type StructureKind = 'hut' | 'trap' | 'fort' | 'smoke' | 'raft';
 
 export interface Structure {
   kind: StructureKind;
   ownerId: number;
+  /** 砦といかだの耐久 */
+  hp?: number;
+  /** 砦が完成したターン */
+  builtTurn?: number;
+  /** いかだに運び込んだ素材 */
+  stock?: ItemStack[];
+}
+
+/** 7.4 救助船 */
+export interface Ship {
+  x: number;
+  y: number;
+  /** 呼んだ人。到着地点をすぐ知る */
+  callerId: number;
+  arrivesTurn: number;
+  /** このターンの終わりまで待つ */
+  leavesTurn: number;
+  /** もう去った。これ以降は呼べない */
+  gone?: boolean;
+}
+
+/** 4.5 勝利条件の進み具合 */
+export interface Progress {
+  fishCaught: number;
+  lordCaughtBefore: boolean;
+  lordHeldTurns: number;
+  healCount: number;
+  healedBy: Record<number, number>;
+  warPoints: number;
+  explored: number[];
+  specialsVisited: number[];
 }
 
 export interface Letter {
@@ -143,6 +247,34 @@ export interface PlayerState {
   ambushTurn: number;
   /** 休息したターン（次のターンの行動値に効く） */
   restedTurn: number;
+  maxHp: number;
+  job: JobId | null;
+  publicTrait: TraitId | null;
+  secretTrait: TraitId | null;
+  extraJob: JobId | null;
+  /** 秘密特性を公開したか */
+  secretRevealed: boolean;
+  /** 一度きりの特性を使ったか */
+  secretUsed: boolean;
+  progress: Progress;
+  /** 健脚を使ったターン */
+  freeMoveTurn: number;
+  /** 人望を使った日 */
+  freeWhisperDay: number;
+  /** 鷹の目を使った日 */
+  scoutDay: number;
+  /** 探索したターン（視界が広がる） */
+  exploreTurn: number;
+  /** 死んだふり中。他の人には脱落して見える */
+  playingDead: boolean;
+  /** 執念で復活を待っている */
+  reviving: boolean;
+  /** 砦を修理したターン */
+  repairedTurn: number;
+  /** 無線機を直したか */
+  radioFixed: boolean;
+  /** 医師に初めて治療してもらったか */
+  treatedOnce: boolean;
 }
 
 /** 8.1 行動値の内訳は公開情報 */
@@ -161,6 +293,12 @@ export interface GameState {
   finished: boolean;
   /** 全員が同時に倒れた場合は null のまま終わる */
   winnerId: number | null;
+  victoryReason: VictoryReason | null;
+  ship: Ship | null;
+  /** 鷹の目で一時的に見えるマス */
+  scouts: { playerId: number; cells: number[]; untilTurn: number }[];
+  /** 「勝利目前」を知らせ済みのプレイヤー */
+  nearNotified: number[];
   map: GameMap;
   /** マスごとの枯渇度 */
   depletion: number[];
@@ -197,9 +335,37 @@ export type PlanAction =
   | { type: 'ambush' }
   | { type: 'letter'; text: string }
   /** 相手の指定は攻撃と同じ */
-  | { type: 'whisper'; x: number; y: number; who?: number };
+  | { type: 'whisper'; x: number; y: number; who?: number }
+  /** 医師の治療。相手の指定は攻撃と同じ */
+  | { type: 'heal'; x: number; y: number; who?: number }
+  | { type: 'explore' }
+  /** 今いるマスの砦を直す */
+  | { type: 'repair' }
+  /** 今いるマスの砦やいかだを壊す */
+  | { type: 'smash' }
+  /** 今いるマスの狼煙を消す */
+  | { type: 'extinguish' }
+  /** 砂浜のいかだに素材を運び込む（なければ作り始める） */
+  | { type: 'raftWork' }
+  | { type: 'launch' }
+  /** 救助の無線機。1回目で修理し、2回目で呼ぶ */
+  | { type: 'useRadio' }
+  /** 鷹の目。好きなマスとその周りを見る */
+  | { type: 'scout'; x: number; y: number }
+  /** 偽の知らせ */
+  | { type: 'falseAlarm' };
 
 export type Action =
+  | { type: 'heal'; playerId: number; targetId: number }
+  | { type: 'explore'; playerId: number }
+  | { type: 'repair'; playerId: number }
+  | { type: 'smash'; playerId: number }
+  | { type: 'extinguish'; playerId: number }
+  | { type: 'raftWork'; playerId: number }
+  | { type: 'launch'; playerId: number }
+  | { type: 'useRadio'; playerId: number }
+  | { type: 'scout'; playerId: number; x: number; y: number }
+  | { type: 'falseAlarm'; playerId: number }
   | { type: 'move'; playerId: number; direction: Direction }
   | { type: 'gather'; playerId: number }
   | { type: 'discard'; playerId: number; item: ItemId }
@@ -224,7 +390,8 @@ export type BlockReason =
   | 'missingMaterials'
   | 'occupied'
   | 'cannotHide'
-  | 'inventoryFull';
+  | 'inventoryFull'
+  | 'notAllowed';
 
 export type GameEvent =
   | { type: 'blocked'; playerId: number; reason: BlockReason; at?: Point; terrain?: TerrainId; cost?: number }
@@ -282,6 +449,30 @@ export type GameEvent =
   | { type: 'fatigued'; playerId: number }
   /** 出血が自然に止まった */
   | { type: 'bleedStopped'; playerId: number }
+  | { type: 'healed'; playerId: number; targetId: number | null; hp: number; maxHpUp: boolean }
+  /** 治療してもらった（本人にだけ届く） */
+  | { type: 'wasHealed'; playerId: number; hp: number; maxHpUp: boolean }
+  | { type: 'explored'; playerId: number }
+  | { type: 'repaired'; playerId: number; hp: number }
+  | { type: 'smashed'; playerId: number; kind: StructureKind; hp: number; destroyed: boolean }
+  | { type: 'raftWorked'; playerId: number; complete: boolean; stored: ItemStack[] }
+  | { type: 'radioFixed'; playerId: number }
+  | { type: 'scouted'; playerId: number }
+  /** 呼んだ本人にだけ届く */
+  | { type: 'shipCalled'; playerId: number; x: number; y: number; arrivesTurn: number }
+  /** ここから下は全員に公開 */
+  | { type: 'traitRevealed'; playerId: number; trait: TraitId }
+  | { type: 'nearVictory' }
+  | { type: 'lordCaught' }
+  | { type: 'fortCompleted' }
+  | { type: 'fortDestroyed' }
+  | { type: 'smokeLit'; x: number; y: number }
+  | { type: 'smokeOut' }
+  | { type: 'shipSoon'; x: number; y: number }
+  | { type: 'shipArrived'; x: number; y: number }
+  | { type: 'shipLeft' }
+  | { type: 'playerRevived'; playerId: number }
+  | { type: 'victory'; playerId: number; reason: VictoryReason }
   | { type: 'rested'; playerId: number; healed: number }
   | { type: 'crafted'; playerId: number; recipe: RecipeId; gained: ItemStack[]; lost: ItemStack[] }
   | { type: 'guarded'; playerId: number }

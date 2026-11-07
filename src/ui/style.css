@@ -56,6 +56,23 @@ p { margin: 4px 0 0; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .wrap { overflow-wrap: anywhere; }
 .hint { color: var(--accent); font-size: 13px; font-weight: 700; }
+.special-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; }
+.special-actions:empty { display: none; }
+.trait-line { font-size: 13px; }
+.trait-line b { color: var(--accent); }
+.choice-list { display: flex; flex-direction: column; gap: 8px; }
+.choice { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--panel-line); }
+.choice:first-child { border-top: 0; }
+.choice-info { min-width: 0; font-size: 13px; }
+.choice-info b { display: block; font-size: 15px; }
+.choice .btn { flex: none; min-width: 72px; }
+.choice .btn.picked { background: var(--accent); color: var(--accent-ink); }
+.goal-line { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.result-players { text-align: left; }
+.result-player { padding: 6px 0; border-top: 1px solid var(--panel-line); font-size: 13px; }
+.result-player:first-child { border-top: 0; }
+.result-player b { font-size: 15px; }
+.mark { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 0 3px; border-radius: 4px; background: #000a; color: #ffd27a; font-size: 12px; font-weight: 700; }
 .more-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .btn-small { min-height: 40px; padding: 4px; font-size: 13px; }
 .status-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }

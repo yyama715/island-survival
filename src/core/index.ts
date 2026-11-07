@@ -1,6 +1,9 @@
 export * from './types';
 export * from './data';
-export { applyAction, cleanText, createGame, hasItem, isWeak, respondWhisper, resolveTurn, sendWhisper, visionRadius } from './game';
+export * from './roles';
+export { applyAction, cleanText, createGame, hasItem, isWeak, recipeAp, respondWhisper, resolveTurn, sendWhisper, useMindRead, visionRadius } from './game';
+export * from './draft';
+export { courseIngredients, describeProgress, exploreTarget, hasRole, isNearVictory, type GoalLine } from './victory';
 export { checkFairness, generateMap } from './mapgen';
 export { hashSeed, Rng } from './rng';
 export { getPlayerView, isProtected, projectPlan, replayFor } from './view';

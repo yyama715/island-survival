@@ -3,16 +3,25 @@ import {
   AMBUSH_AP,
   ATTACK_AP,
   BOTTLE_ITEM,
+  EXPLORE_AP,
   GATHER_AP,
   GUARD_AP,
+  HEAL_AP,
   HIDE_AP,
-  INVENTORY_SLOTS,
   isProtected,
   ITEMS,
+  JOB_IDS,
+  JOBS,
   LETTER,
   MAP_SIZE_NAMES,
   projectPlan,
+  RARITY_NAMES,
+  recipeAp,
   RECIPES,
+  TRAITS,
+  type DraftView,
+  type JobId,
+  type TraitId,
   TERRAIN,
   THROW_ITEM,
   WEAK_THRESHOLD,
@@ -30,7 +39,7 @@ import {
 } from '../core/index';
 import type { PlanStatus, ServerMessage } from '../net/protocol';
 import { Net } from './net';
-import { describeEvent, describePlanAction } from './text';
+import { describeEvent, describePlanAction, VICTORY_TEXT } from './text';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -47,6 +56,16 @@ const GLYPH: Record<TerrainId, string> = {
   wreck: '船',
   ruins: '遺',
 };
+
+const STRUCTURE_NAMES = { hut: '小屋', trap: '自分の罠', fort: '砦', smoke: '狼煙', raft: 'いかだ' } as const;
+const STRUCTURE_GLYPH = { hut: '⌂', trap: '×', fort: '▣', smoke: '↑', raft: '≈' } as const;
+const STRUCTURE_NOTES = {
+  hut: '小屋がある（休息の回復が倍）',
+  trap: '自分の置いた罠がある',
+  fort: '砦がある（中にいると防御+2）',
+  smoke: '狼煙が上がっている',
+  raft: 'いかだがある',
+} as const;
 
 const KEY_DIRECTION: Record<string, Direction> = {
   ArrowUp: 'up',
@@ -66,7 +85,11 @@ const SLOW_CONNECT_MS = 15_000;
 const ERROR_TOAST_MS = 6000;
 const TOAST_MS = 2600;
 
-type Screen = 'home' | 'lobby' | 'game' | 'result';
+type Screen = 'home' | 'lobby' | 'draft' | 'game' | 'result';
+
+let draftDeadline = 0;
+/** 所持品の選択中 */
+let draftItemPicks = new Set<number>();
 
 // 画面の状態
 let view: PlayerView | null = null;
@@ -109,6 +132,7 @@ const net = new Net({
 function showScreen(screen: Screen) {
   $('screen-home').hidden = screen !== 'home';
   $('screen-lobby').hidden = screen !== 'lobby';
+  $('screen-draft').hidden = screen !== 'draft';
   $('screen-game').hidden = screen !== 'game';
   $('screen-result').hidden = screen !== 'result';
 }
@@ -185,6 +209,28 @@ function handleMessage(message: ServerMessage) {
       status = message.status;
       if (view) renderOrder();
       break;
+    case 'draft':
+      if (switchingRoom) break;
+      draftDeadline = Date.now() + message.remainingMs;
+      renderDraft(message.view, message.names);
+      showScreen('draft');
+      break;
+    case 'announce':
+      if (view) {
+        for (const event of message.events) {
+          const text = describeEvent(event, nameOf, view.me.id);
+          if (text) log.unshift(text);
+        }
+        render(false);
+      }
+      break;
+    case 'mindReadResult': {
+      const lines = message.actions.map((a) => describePlanAction(a, null, nameOf)).join('、') || '何も予約していない';
+      log.unshift(`読心術：${nameOf(message.targetId)}の今の予約は「${lines}」`);
+      toast(`${nameOf(message.targetId)}の予約：${lines}`, ERROR_TOAST_MS);
+      if (view) render(false);
+      break;
+    }
     case 'whisperUpdate':
       if (view) {
         view.whispers = message.whispers;
@@ -216,6 +262,30 @@ function handleMessage(message: ServerMessage) {
       stopReplay();
       $('result-title').textContent =
         message.winnerName === null ? '誰も生き残らなかった' : `${message.winnerName} の勝ち！`;
+      $('result-reason').textContent = message.reason ? VICTORY_TEXT[message.reason] : '';
+      // 10.1 リザルトでは全員の秘密特性と進み具合を公開する
+      $('result-players').replaceChildren(
+        ...message.players.map((player) => {
+          const box = document.createElement('div');
+          box.className = 'result-player';
+          const name = document.createElement('b');
+          name.textContent = `${player.name}${player.id === message.winnerId ? '（勝者）' : ''}`;
+          box.append(name);
+          const job = [player.job, player.extraJob].filter(Boolean).map((id) => JOBS[id as JobId].name).join(' + ');
+          const traits = [player.publicTrait, player.secretTrait].filter(Boolean).map((id) => TRAITS[id as TraitId].name).join('、');
+          const detail = document.createElement('p');
+          detail.className = 'muted';
+          detail.textContent = `${job || '職業なし'}／${traits || '特性なし'}`;
+          box.append(detail);
+          for (const goal of player.goals) {
+            const line = document.createElement('p');
+            line.className = 'goal-line';
+            line.textContent = `${goal.label}：${goal.value}`;
+            box.append(line);
+          }
+          return box;
+        }),
+      );
       $('result-seed').textContent = message.seed;
       $('back-to-lobby').hidden = !message.youAreHost;
       $('result-wait').hidden = message.youAreHost;
@@ -289,6 +359,155 @@ function renderLobby(message: Extract<ServerMessage, { t: 'lobby' }>) {
   $('lobby-rules').textContent = `広さ「${MAP_SIZE_NAMES[message.setup.mapSize]}」・ターンの長さ ${message.setup.planSeconds}秒${seed}`;
   $('start-game').hidden = !hostCanStart;
   $('lobby-wait').hidden = hostCanStart;
+}
+
+// ―― キャラ選択 ――
+
+function traitLine(label: string, id: TraitId): HTMLElement {
+  const def = TRAITS[id];
+  const line = document.createElement('p');
+  line.className = 'trait-line';
+  const name = document.createElement('b');
+  name.textContent = `${label}：${def.name}（${RARITY_NAMES[def.rarity]}）`;
+  line.append(name, document.createTextNode(` ${def.text}`));
+  return line;
+}
+
+function choice(title: string, detail: string, label: string, onClick: (() => void) | null, picked = false): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'choice';
+  const info = document.createElement('div');
+  info.className = 'choice-info';
+  const name = document.createElement('b');
+  name.textContent = title;
+  const text = document.createElement('span');
+  text.className = 'muted';
+  text.textContent = detail;
+  info.append(name, text);
+  row.append(info);
+  if (onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `btn btn-small${picked ? ' picked' : ''}`;
+    button.textContent = label;
+    button.addEventListener('click', onClick);
+    row.append(button);
+  }
+  return row;
+}
+
+function draftNote(text: string): HTMLElement {
+  const note = document.createElement('p');
+  note.className = 'hint';
+  note.textContent = text;
+  return note;
+}
+
+function renderDraft(current: DraftView, names: string[]) {
+  const mine = $('draft-mine');
+  const heading = document.createElement('h2');
+  heading.textContent = 'あなたの固有能力';
+  mine.replaceChildren(heading, traitLine('公開特性', current.publicTrait), traitLine('秘密特性', current.secretTrait));
+  if (current.bonusItem) {
+    const bonus = document.createElement('p');
+    bonus.className = 'trait-line';
+    bonus.textContent = `秘密の追加所持品：${ITEMS[current.bonusItem.item].name}×${current.bonusItem.count}（秘密特性がコモンの補償）`;
+    mine.append(bonus);
+  }
+  if (current.extraJob) {
+    const extra = document.createElement('p');
+    extra.className = 'trait-line';
+    extra.textContent = `秘密の職業：${JOBS[current.extraJob].name}。${JOBS[current.extraJob].goal}`;
+    mine.append(extra);
+  }
+
+  const seatName = (id: number) => names[id] ?? `P${id + 1}`;
+  const body = $('draft-body');
+  const items: HTMLElement[] = [];
+
+  if (current.phase === 'reroll') {
+    items.push(draftNote('公開特性を1回だけ引き直せます。引き直すと初期所持品が1つ減ります。'));
+    if (current.rerollDone) items.push(draftNote('他の人を待っています…'));
+    else {
+      items.push(
+        choice('このまま進む', '', '決定', () => net.send({ t: 'draftReroll', reroll: false })),
+        choice('引き直す', '初期所持品−1', '引き直す', () => net.send({ t: 'draftReroll', reroll: true })),
+      );
+    }
+  } else if (current.phase === 'job') {
+    const myTurn = current.turnSeat === current.you;
+    items.push(draftNote(myTurn ? '職業を選んでください。' : `${seatName(current.turnSeat ?? 0)}が職業を選んでいます…`));
+    for (const id of JOB_IDS) {
+      const def = JOBS[id];
+      const taken = current.seats.find((s) => s.job === id);
+      items.push(
+        choice(
+          `${def.name}${taken ? `（${seatName(taken.id)}）` : ''}`,
+          `機敏さ${def.agility}。${def.passive}。勝利条件：${def.goal}`,
+          '選ぶ',
+          myTurn && !taken ? () => net.send({ t: 'draftJob', job: id }) : null,
+        ),
+      );
+    }
+  } else if (current.phase === 'items') {
+    const job = current.seats[current.you].job;
+    if (current.itemsDone || !job) {
+      items.push(draftNote('他の人を待っています…'));
+    } else {
+      items.push(draftNote(`初期所持品を${current.allowance}つ選んでください。${current.rerolled ? '（引き直したので1つ少なくなっています）' : ''}`));
+      JOBS[job].items.forEach((stack, index) => {
+        items.push(
+          choice(`${ITEMS[stack.item].name}×${stack.count}`, '', draftItemPicks.has(index) ? '選択中' : '選ぶ', () => {
+            if (draftItemPicks.has(index)) draftItemPicks.delete(index);
+            else if (draftItemPicks.size < current.allowance) draftItemPicks.add(index);
+            renderDraft(current, names);
+          }, draftItemPicks.has(index)),
+        );
+      });
+      const confirm = document.createElement('button');
+      confirm.type = 'button';
+      confirm.className = 'btn btn-primary';
+      confirm.textContent = '決定';
+      confirm.disabled = draftItemPicks.size !== current.allowance;
+      confirm.addEventListener('click', () => {
+        net.send({ t: 'draftItems', indexes: [...draftItemPicks] });
+        draftItemPicks = new Set();
+      });
+      items.push(confirm);
+    }
+  } else if (current.phase === 'start') {
+    const myTurn = current.turnSeat === current.you;
+    items.push(draftNote(myTurn ? '初期位置を選んでください。' : `${seatName(current.turnSeat ?? 0)}が初期位置を選んでいます…`));
+    for (const start of current.starts) {
+      items.push(
+        choice(
+          start.label,
+          start.taken ? '選択済み' : '',
+          '選ぶ',
+          myTurn && !start.taken ? () => net.send({ t: 'draftStart', start: start.index }) : null,
+        ),
+      );
+    }
+  }
+  const list = document.createElement('div');
+  list.className = 'choice-list';
+  list.append(...items);
+  body.replaceChildren(list);
+
+  $('draft-seats').replaceChildren(
+    ...current.seats.map((seat) => {
+      const row = document.createElement('li');
+      const dot = document.createElement('span');
+      dot.className = `dot p${seat.id}`;
+      const name = document.createElement('span');
+      name.textContent = seatName(seat.id) + (seat.id === current.you ? '（あなた）' : '');
+      const note = document.createElement('span');
+      note.className = 'muted';
+      note.textContent = `${seat.job ? JOBS[seat.job].name : '職業未定'}／${TRAITS[seat.publicTrait].name}`;
+      row.append(dot, name, note);
+      return row;
+    }),
+  );
 }
 
 // ―― 盤面 ――
@@ -402,6 +621,9 @@ function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellVie
   const targets: { label: string; who?: number }[] = cell.figures.flatMap((f) =>
     f.kind === 'player' ? [{ label: f.name, who: f.id }] : [],
   );
+  const myJob = current.roster.find((p) => p.id === current.me.id)?.job;
+  const here = projectPlan(current, plan);
+  const canHeal = (myJob === 'doctor' || current.secret.extraJob === 'doctor') && here.x === cell.x && here.y === cell.y;
   if (cell.figures.some((f) => f.kind === 'shadow')) targets.push({ label: '人影' });
   const owned = projectPlan(current, plan).owned;
   const canThrow = current.phase === 'day' && (owned[THROW_ITEM] ?? 0) > 0;
@@ -426,6 +648,12 @@ function appendCellActions(info: HTMLElement, current: PlayerView, cell: CellVie
           tryAdd({ type: 'attack', ...spot, useBottle: true });
         }, 'btn btn-danger');
       }
+    }
+    if (canHeal) {
+      add(`${target.label}を治療（AP${HEAL_AP}）`, () => {
+        inspected = null;
+        tryAdd({ type: 'heal', ...spot });
+      }, 'btn btn-primary');
     }
     add(`${target.label}に密談を持ちかける（AP${WHISPER_AP}）`, () => {
       inspected = null;
@@ -484,14 +712,27 @@ function renderCell(button: HTMLButtonElement, cell: CellView, current: PlayerVi
   const badge = canTarget ? `<span class="cost">${cell.terrain ? cost : '?'}</span>` : '';
   const worn = cell.depletion ? `<span class="worn" data-level="${cell.depletion}"></span>` : '';
   const relic = cell.relic ? '<span class="relic" aria-label="遺品">✝</span>' : '';
-  const structure =
-    cell.structure === 'hut'
-      ? '<span class="structure" aria-label="小屋">⌂</span>'
-      : cell.structure === 'trap'
-        ? '<span class="structure" aria-label="自分の罠">×</span>'
-        : '';
-  button.innerHTML = `${label}${worn}${relic}${structure}${pieces}${ghost}${badge}`;
+  const structure = cell.structure
+    ? `<span class="structure" aria-label="${STRUCTURE_NAMES[cell.structure]}">${STRUCTURE_GLYPH[cell.structure]}</span>`
+    : '';
+  const mark = current.marks.find((m) => m.x === cell.x && m.y === cell.y);
+  const markHtml = mark ? `<span class="mark">${mark.kind === 'smoke' ? '煙' : '船'}</span>` : '';
+  button.innerHTML = `${label}${worn}${relic}${structure}${markHtml}${pieces}${ghost}${badge}`;
   button.setAttribute('aria-label', cell.terrain ? TERRAIN[cell.terrain].name : '未探索');
+}
+
+/** 4.3 鷹の目：好きなマスを見る */
+function appendScout(info: HTMLElement, current: PlayerView, cell: CellView) {
+  if (!canEdit() || !projectPlan(current, [...plan, { type: 'scout', x: cell.x, y: cell.y }]).ok) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn btn-small';
+  button.textContent = 'このマスの周りを見る（鷹の目）';
+  button.addEventListener('click', () => {
+    inspected = null;
+    tryAdd({ type: 'scout', x: cell.x, y: cell.y });
+  });
+  info.append(button);
 }
 
 function renderInfo(current: PlayerView) {
@@ -501,6 +742,7 @@ function renderInfo(current: PlayerView) {
   const info = $('info');
   if (!cell.terrain) {
     info.innerHTML = `<h2>未探索</h2><p class="muted">何があるか分からない。</p>`;
+    appendScout(info, current, cell);
     return;
   }
   const def = TERRAIN[cell.terrain];
@@ -518,9 +760,10 @@ function renderInfo(current: PlayerView) {
     ${worn}${memoryNote}`;
   if (cell.structure) {
     const note = document.createElement('p');
-    note.textContent = cell.structure === 'hut' ? '小屋がある（休息の回復が倍）' : '自分の置いた罠がある';
+    note.textContent = STRUCTURE_NOTES[cell.structure];
     info.append(note);
   }
+  appendScout(info, current, cell);
   if (isHere) {
     // 手紙は誰が書いたか分からない自由入力なので textContent で出す
     for (const text of current.letters) {
@@ -629,19 +872,106 @@ function inputsText(id: RecipeId): string {
     .join(' または ');
 }
 
+/** 4章 自分の職業、特性、勝利条件の進み具合 */
+function renderRole(current: PlayerView) {
+  const me = current.roster.find((p) => p.id === current.me.id);
+  const body = $('role-body');
+  if (!me?.job) {
+    $('role-card').hidden = true;
+    return;
+  }
+  $('role-card').hidden = false;
+  $('role-title').textContent = `あなたの役割：${JOBS[me.job].name}`;
+  const lines: HTMLElement[] = [];
+  const goal = document.createElement('p');
+  goal.className = 'trait-line';
+  goal.textContent = `勝利条件：${JOBS[me.job].goal}`;
+  lines.push(goal);
+  if (current.secret.extraJob) {
+    const extra = document.createElement('p');
+    extra.className = 'trait-line';
+    extra.textContent = `秘密の職業「${JOBS[current.secret.extraJob].name}」：${JOBS[current.secret.extraJob].goal}`;
+    lines.push(extra);
+  }
+  for (const line of current.goals) {
+    const row = document.createElement('p');
+    row.className = 'goal-line';
+    const label = document.createElement('span');
+    label.textContent = line.label;
+    const value = document.createElement('b');
+    value.textContent = line.value;
+    row.append(label, value);
+    lines.push(row);
+  }
+  if (me.publicTrait) lines.push(traitLine('公開特性', me.publicTrait));
+  if (current.secret.trait) lines.push(traitLine('秘密特性', current.secret.trait));
+  // 読心術：今の予約を覗く
+  if (current.secret.trait === 'mind_reader' && !current.secret.used && planning) {
+    for (const other of current.roster) {
+      if (other.id === current.me.id || !other.alive) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-small';
+      button.textContent = `${other.name}の予約を覗く（読心術）`;
+      button.addEventListener('click', () => net.send({ t: 'mindRead', targetId: other.id }));
+      lines.push(button);
+    }
+  }
+  body.replaceChildren(...lines);
+}
+
+/** 今いるマスでできる特別な行動。できるものだけ出す */
+function renderSpecial(current: PlayerView) {
+  const box = $('special-actions');
+  if (!canEdit()) {
+    box.replaceChildren();
+    return;
+  }
+  const from = projectPlan(current, plan);
+  const terrain = current.cells[from.y * current.width + from.x]?.terrain;
+  const options: { label: string; action: PlanAction }[] = [{ label: `探索 ${EXPLORE_AP}AP`, action: { type: 'explore' } }];
+  if (terrain === 'beach') options.push({ label: 'いかだ作り', action: { type: 'raftWork' } });
+  options.push(
+    { label: '砦を修理', action: { type: 'repair' } },
+    { label: '建物を壊す', action: { type: 'smash' } },
+    { label: '狼煙を消す', action: { type: 'extinguish' } },
+    { label: 'いかだで脱出', action: { type: 'launch' } },
+    { label: current.secret.radioFixed ? '無線で救助を呼ぶ' : '無線機を直す', action: { type: 'useRadio' } },
+    { label: '偽の知らせ', action: { type: 'falseAlarm' } },
+  );
+  box.replaceChildren(
+    ...options
+      .filter(({ action }) => projectPlan(current, [...plan, action]).ok)
+      .map(({ label, action }) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-small';
+        button.textContent = label;
+        button.addEventListener('click', () => tryAdd(action));
+        return button;
+      }),
+  );
+}
+
 function renderRecipes(current: PlayerView) {
   const editing = canEdit();
+  const myJob = current.roster.find((p) => p.id === current.me.id)?.job ?? null;
+  // 職業専用のレシピは、作れる人にだけ見せる
+  const available = (Object.keys(RECIPES) as RecipeId[]).filter((id) => {
+    const job = RECIPES[id].job;
+    return !job || job === myJob || job === current.secret.extraJob;
+  });
   $('recipes').replaceChildren(
-    ...(Object.keys(RECIPES) as RecipeId[]).map((id) => {
+    ...available.map((id) => {
       const recipe = RECIPES[id];
       const row = document.createElement('li');
       const info = document.createElement('div');
       info.className = 'recipe-info';
       const name = document.createElement('b');
-      name.textContent = `${recipe.name}（AP${recipe.ap}）`;
+      name.textContent = `${recipe.name}（AP${recipeAp(recipe.ap, myJob)}）`;
       const detail = document.createElement('span');
       detail.className = 'muted';
-      detail.textContent = `${inputsText(id)}。${recipe.summary}`;
+      detail.textContent = recipe.course ? recipe.summary : `${inputsText(id)}。${recipe.summary}`;
       info.append(name, detail);
       const button = document.createElement('button');
       button.type = 'button';
@@ -708,7 +1038,13 @@ function renderOrder() {
       dot.className = `dot p${playerId}`;
       const name = document.createElement('span');
       name.className = 'order-name';
-      name.textContent = nameOf(playerId) + (playerId === current.me.id ? '（あなた）' : '');
+      const person = current.roster.find((p) => p.id === playerId);
+      const public_ = [
+        person?.job ? JOBS[person.job].name : '',
+        person?.publicTrait ? TRAITS[person.publicTrait].name : '',
+        person?.revealedTrait ? TRAITS[person.revealedTrait].name : '',
+      ].filter(Boolean).join('・');
+      name.textContent = nameOf(playerId) + (playerId === current.me.id ? '（あなた）' : '') + (public_ ? ` ${public_}` : '');
       const score = document.createElement('span');
       score.className = 'muted';
       score.textContent = `行動値 ${value}`;
@@ -780,6 +1116,8 @@ function render(centerOnPlayer: boolean) {
   renderTimer();
 
   renderVitals(current);
+  renderRole(current);
+  renderSpecial(current);
   renderOrder();
   renderPlan(current);
   renderInfo(current);
@@ -809,7 +1147,7 @@ function render(centerOnPlayer: boolean) {
 
 function renderInventory(current: PlayerView) {
   const inventory = $('inventory');
-  $('slot-count').textContent = `${current.me.inventory.length} / ${INVENTORY_SLOTS}枠`;
+  $('slot-count').textContent = `${current.me.inventory.length} / ${current.slots}枠`;
   const planned = (item: ItemId) =>
     plan.filter((a) => (a.type === 'discard' || a.type === 'use') && a.item === item).length;
   inventory.replaceChildren(
@@ -1018,6 +1356,9 @@ window.addEventListener('keydown', (event) => {
 
 setInterval(() => {
   if (!$('screen-game').hidden) renderTimer();
+  if (!$('screen-draft').hidden) {
+    $('draft-timer').textContent = `${Math.max(0, Math.ceil((draftDeadline - Date.now()) / 1000))}秒`;
+  }
 }, 250);
 
 // 端末の回転などで画面の大きさが変わっても、自分のマスを見失わないようにする

@@ -1,6 +1,17 @@
 // ルール本体。applyAction は元の状態を変更せず、新しい状態と出来事を返す。
 import {
   AMBUSH_AP,
+  BIG_EATER_HP,
+  EARLY_RISER_BONUS,
+  EXPLORE_AP,
+  FISHER_FISH_MULTIPLIER,
+  HEAL_AP,
+  LOST_SENSE_DRIFT,
+  LOST_SENSE_GATHER,
+  MAP_FRAGMENT_RADIUS,
+  REPAIR_AP,
+  SOLDIER,
+  TENACITY_HP,
   AP_PER_TURN,
   ATTACK_AP,
   BLEED_CONTINUE_CHANCE,
@@ -35,6 +46,7 @@ import {
   RIVER_FISH_CHANCE,
   SPECIAL_LOOT,
   SPECIAL_REPEAT_NOTHING_CHANCE,
+  SPECIAL_TERRAINS,
   STACK_SIZE,
   STATUS_DAMAGE,
   TERRAIN,
@@ -44,6 +56,7 @@ import {
   TRAP_DAMAGE,
   UNARMED,
   VISION_BASE,
+  WATER_TERRAINS,
   WEAK_THRESHOLD,
   WEAPONS,
   WHISPER,
@@ -54,7 +67,13 @@ import {
 } from './data';
 import { generateMap } from './mapgen';
 import { hashSeed, Rng } from './rng';
+import { BACKPACK_SLOTS, GOALS, JOBS, RAFT, SMOKE, STEAL_PRIORITY } from './roles';
+import { courseIngredients, findWinner, hasRole, isNearVictory, newProgress } from './victory';
 import type {
+  JobId,
+  PlayerSetup,
+  Structure,
+  VictoryReason,
   Action,
   ActionResult,
   Direction,
@@ -117,10 +136,26 @@ function hasLineOfSight(terrain: readonly TerrainId[], width: number, fromX: num
   return true;
 }
 
+/** 職業、特性、道具、探索を合わせた今の視界 */
+export function playerVision(state: GameState, player: PlayerState): number {
+  const here = state.map.terrain[cellIndex(state, player.x, player.y)];
+  // 夜目は夜でも昼と同じ視界
+  const phase = player.publicTrait === 'night_eyes' ? 'day' : phaseOf(state.turn);
+  let radius = visionRadius(here, phase, hasItem(player, 'torch'));
+  if (hasRole(player, 'explorer')) radius += 1;
+  if (phaseOf(state.turn) === 'day' && hasItem(player, 'binoculars')) radius += 1;
+  if (player.exploreTurn === state.turn) radius += 1;
+  return radius;
+}
+
+/** 特性や道具まで含めて、夜に誰なのかまで見えるか */
+export const seesNames = (state: GameState, viewer: PlayerState, other: PlayerState) =>
+  phaseOf(state.turn) === 'day' || viewer.publicTrait === 'night_eyes' || hasItem(other, 'torch');
+
 export function visibleCells(state: GameState, player: PlayerState): number[] {
   const { width, height, terrain } = state.map;
   const here = terrain[cellIndex(state, player.x, player.y)];
-  const radius = visionRadius(here, phaseOf(state.turn), hasItem(player, 'torch'));
+  const radius = playerVision(state, player);
   const seesOver = TERRAIN[here].seesOverBlocks;
   const cells: number[] = [];
   for (let y = Math.max(0, player.y - radius); y <= Math.min(height - 1, player.y + radius); y++) {
@@ -140,12 +175,14 @@ function rollInitiative(players: PlayerState[], rng: Rng, turn = 1): InitiativeE
   const rolled = players
     .filter((player) => player.alive)
     .map((player) => {
-      const agility = DEFAULT_AGILITY;
-      const badlyHurt = player.hp <= INITIAL_HP / 2 ? INITIATIVE_MODIFIER.badlyHurt : 0;
+      // 島の主は重く、持っていると機敏さが1下がる
+      const agility = (player.job ? JOBS[player.job].agility : DEFAULT_AGILITY) - (hasItem(player, 'island_lord') ? 1 : 0);
+      const badlyHurt = player.hp <= player.maxHp / 2 ? INITIATIVE_MODIFIER.badlyHurt : 0;
       const overloaded = isInventoryFull(player) ? INITIATIVE_MODIFIER.overloaded : 0;
       const weak = isWeak(player) ? INITIATIVE_MODIFIER.weak : 0;
       const rested = player.restedTurn === turn - 1 && turn > 1 ? INITIATIVE_MODIFIER.rested : 0;
-      const value = agility + rng.int(1, 6) + badlyHurt + overloaded + weak + rested;
+      const early = player.secretTrait === 'early_riser' && phaseOf(turn) === 'day' ? EARLY_RISER_BONUS : 0;
+      const value = agility + rng.int(1, 6) + badlyHurt + overloaded + weak + rested + early;
       return { entry: { playerId: player.id, value, agility }, tiebreak: rng.next() };
     });
   rolled.sort(
@@ -154,14 +191,58 @@ function rollInitiative(players: PlayerState[], rng: Rng, turn = 1): InitiativeE
   return rolled.map((r) => r.entry);
 }
 
+/** リュックがあれば枠が増える */
+export const slotsOf = (player: PlayerState) => INVENTORY_SLOTS + (hasItem(player, 'backpack') ? BACKPACK_SLOTS : 0);
+
 const isInventoryFull = (player: PlayerState) =>
-  player.inventory.length >= INVENTORY_SLOTS && player.inventory.every((stack) => stack.count >= STACK_SIZE);
+  player.inventory.length >= slotsOf(player) && player.inventory.every((stack) => stack.count >= STACK_SIZE);
 
 export interface CreateGameOptions {
   mapSize?: MapSize;
   /** 実際に遊ぶ人数。島の大きさは playerCount で決まり、足りない席はCPUが入るまで空く */
   seats?: number;
   names?: string[];
+  /** キャラ選択の結果。なければ職業も特性もない */
+  setups?: PlayerSetup[];
+}
+
+/** 秘密特性が発動した瞬間に公開する */
+function reveal(player: PlayerState, events: GameEvent[]) {
+  if (player.secretRevealed || !player.secretTrait) return;
+  player.secretRevealed = true;
+  events.push({ type: 'traitRevealed', playerId: player.id, trait: player.secretTrait });
+}
+
+function applySetup(state: GameState, player: PlayerState, setup: PlayerSetup, rng: Rng) {
+  player.job = setup.job;
+  player.publicTrait = setup.publicTrait;
+  player.secretTrait = setup.secretTrait;
+  player.extraJob = setup.extraJob ?? null;
+  const start = state.map.starts[setup.start];
+  player.x = start.x;
+  player.y = start.y;
+  for (const { item, count } of setup.items) addItem(player, item, count);
+  if (setup.publicTrait === 'big_eater') {
+    player.maxHp += BIG_EATER_HP;
+    player.hp = player.maxHp;
+  }
+  const { terrain, width, height } = state.map;
+  // 島の記憶：水源の位置が最初から分かる
+  if (setup.publicTrait === 'island_memory') {
+    terrain.forEach((t, i) => {
+      if (WATER_TERRAINS.includes(t)) player.memory[i] = t;
+    });
+  }
+  // 地図の断片：どこか一部の霧が最初から晴れている
+  if (hasItem(player, 'map_fragment')) {
+    const cx = rng.int(MAP_FRAGMENT_RADIUS, width - 1 - MAP_FRAGMENT_RADIUS);
+    const cy = rng.int(MAP_FRAGMENT_RADIUS, height - 1 - MAP_FRAGMENT_RADIUS);
+    for (let y = cy - MAP_FRAGMENT_RADIUS; y <= cy + MAP_FRAGMENT_RADIUS; y++) {
+      for (let x = cx - MAP_FRAGMENT_RADIUS; x <= cx + MAP_FRAGMENT_RADIUS; x++) {
+        player.memory[y * width + x] = terrain[y * width + x];
+      }
+    }
+  }
 }
 
 export function createGame(seed: string, playerCount: number, mapSizeOrOptions: MapSize | CreateGameOptions = 'small'): GameState {
@@ -170,7 +251,7 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
   const rng = new Rng(hashSeed(`${seed}`));
   const map = generateMap(rng, playerCount, options.mapSize ?? 'small');
   const cellCount = map.width * map.height;
-  const players: PlayerState[] = map.starts.slice(0, options.seats ?? playerCount).map((start, id) => ({
+  const players: PlayerState[] = map.starts.slice(0, options.setups?.length ?? options.seats ?? playerCount).map((start, id) => ({
     id,
     name: options.names?.[id] ?? `P${id + 1}`,
     x: start.x,
@@ -194,15 +275,35 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     guardTurn: 0,
     ambushTurn: 0,
     restedTurn: 0,
+    maxHp: INITIAL_HP,
+    job: null,
+    publicTrait: null,
+    secretTrait: null,
+    extraJob: null,
+    secretRevealed: false,
+    secretUsed: false,
+    progress: newProgress(),
+    freeMoveTurn: 0,
+    freeWhisperDay: 0,
+    scoutDay: 0,
+    exploreTurn: 0,
+    playingDead: false,
+    reviving: false,
+    repairedTurn: 0,
+    radioFixed: false,
+    treatedOnce: false,
   }));
-  const initiative = rollInitiative(players, rng);
   const state: GameState = {
     seed,
     turn: 1,
     rngState: rng.state,
-    initiative,
+    initiative: [],
     finished: false,
     winnerId: null,
+    victoryReason: null,
+    ship: null,
+    scouts: [],
+    nearNotified: [],
     map,
     depletion: new Array(cellCount).fill(0),
     looted: new Array(cellCount).fill(false),
@@ -213,8 +314,24 @@ export function createGame(seed: string, playerCount: number, mapSizeOrOptions: 
     whispers: [],
     players,
   };
-  for (const player of state.players) refreshMemory(state, player);
+  options.setups?.forEach((setup, id) => applySetup(state, state.players[id], setup, rng));
+  for (const player of state.players) {
+    refreshMemory(state, player);
+    markVisited(state, player);
+  }
+  state.initiative = rollInitiative(players, rng);
+  state.rngState = rng.state;
   return state;
+}
+
+/** 4.5 探検家の踏破と特殊マスの訪問を記録する */
+function markVisited(state: GameState, player: PlayerState) {
+  const index = cellIndex(state, player.x, player.y);
+  const { explored, specialsVisited } = player.progress;
+  if (!explored.includes(index)) explored.push(index);
+  if ((SPECIAL_TERRAINS as readonly TerrainId[]).includes(state.map.terrain[index]) && !specialsVisited.includes(index)) {
+    specialsVisited.push(index);
+  }
 }
 
 /** 入りきらなかった分を返す */
@@ -226,7 +343,7 @@ function addItem(player: PlayerState, item: ItemId, count: number): number {
     stack.count += added;
     remaining -= added;
   }
-  while (remaining > 0 && player.inventory.length < INVENTORY_SLOTS) {
+  while (remaining > 0 && player.inventory.length < slotsOf(player)) {
     const added = Math.min(remaining, STACK_SIZE);
     player.inventory.push({ item, count: added });
     remaining -= added;
@@ -292,17 +409,38 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
   const entries = TERRAIN[terrain].gather;
   const weights = adjustedWeights(entries, state.depletion[index], phaseOf(state.turn));
 
+  // 4.2 漁師は砂浜で魚が出やすい
+  if (hasRole(player, 'fisher') && terrain === 'beach') {
+    entries.forEach((e, i) => {
+      if (e.kind === 'item' && e.rolls.some((r) => r.item === 'fish')) weights[i] *= FISHER_FISH_MULTIPLIER;
+    });
+  }
+  // 4.3 方向音痴は採取率が上がる
+  if (player.secretTrait === 'lost_sense') {
+    const nothing = entries.findIndex((e) => e.kind === 'nothing');
+    const moved = Math.min(weights[nothing], LOST_SENSE_GATHER);
+    weights[nothing] -= moved;
+    const first = entries.findIndex((e) => e.kind === 'item');
+    weights[first] += moved;
+  }
+
   // 天井：「何もなし」が続いたら、次は必ず何か手に入る
   const pity = player.dryStreak >= PITY_AFTER_DRY_STREAK;
   const finalWeights = weights.map((w, i) => (pity && yieldsNothing(entries[i], player) ? 0 : w));
-  let roll = rng.next() * finalWeights.reduce((a, b) => a + b, 0);
-  let entry = entries[0];
-  for (let i = 0; i < entries.length; i++) {
-    if (finalWeights[i] <= 0) continue;
-    entry = entries[i];
-    roll -= finalWeights[i];
-    if (roll < 0) break;
-  }
+  const draw = () => {
+    let roll = rng.next() * finalWeights.reduce((a, b) => a + b, 0);
+    let chosen = entries[0];
+    for (let i = 0; i < entries.length; i++) {
+      if (finalWeights[i] <= 0) continue;
+      chosen = entries[i];
+      roll -= finalWeights[i];
+      if (roll < 0) break;
+    }
+    return chosen;
+  };
+  let entry = draw();
+  // 4.3 強運は「何もなし」を引き直す
+  if (entry.kind === 'nothing' && player.publicTrait === 'lucky') entry = draw();
 
   state.depletion[index] = Math.min(DEPLETION.max, state.depletion[index] + 1);
 
@@ -313,7 +451,7 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
   } else if (entry.kind === 'danger') {
     player.dryStreak = 0;
     player.hp = Math.max(0, player.hp - entry.damage);
-    if (player.hp === 0) eliminate(state, player);
+    if (player.hp === 0) eliminate(state, player, events);
     events.push({ type: 'gatherDanger', playerId, terrain, damage: entry.damage, eliminated: !player.alive });
   } else if (entry.kind === 'nest') {
     player.dryStreak = 0;
@@ -324,8 +462,26 @@ function gatherFromTable(state: GameState, player: PlayerState, index: number, r
     events.push({ type: 'gatherNothing', playerId, terrain, missingTool: true });
   } else {
     player.dryStreak = 0;
-    events.push({ type: 'gathered', playerId, terrain, pity, ...receive(player, [rollItem(rng, entry.rolls, player)]) });
+    const received = receive(player, [rollItem(rng, entry.rolls, player)]);
+    events.push({ type: 'gathered', playerId, terrain, pity, ...received });
+    fishCaught(player, received.gained, rng, events);
   }
+}
+
+/** 4.5 漁師の釣果を数える。天井に届くと島の主がかかる */
+function fishCaught(player: PlayerState, gained: ItemStack[], rng: Rng, events: GameEvent[]) {
+  if (!hasRole(player, 'fisher')) return;
+  const caught = gained.filter((s) => s.item === 'fish').reduce((sum, s) => sum + s.count, 0);
+  if (caught === 0 || hasItem(player, 'island_lord')) return;
+  const p = player.progress;
+  p.fishCaught += caught;
+  const ceiling = p.lordCaughtBefore ? GOALS.secondLordCeiling : GOALS.lordCeiling;
+  if (p.fishCaught < ceiling && rng.next() >= GOALS.lordChance) return;
+  if (addItem(player, 'island_lord', 1) > 0) return;
+  p.fishCaught = 0;
+  p.lordCaughtBefore = true;
+  p.lordHeldTurns = 0;
+  events.push({ type: 'lordCaught' });
 }
 
 /** 泉・川は確実に水が取れるので、枯渇・夜・天井の対象にしない */
@@ -340,7 +496,11 @@ function gatherWater(player: PlayerState, terrain: TerrainId, rng: Rng, events: 
   if (terrain === 'river' && hasAny(player, FISHING_TOOLS) && rng.next() < RIVER_FISH_CHANCE) {
     stacks.push({ item: 'fish', count: hasItem(player, 'fishing_rod') ? 2 : 1 });
   }
-  if (stacks.length > 0) events.push({ type: 'gathered', playerId, terrain, pity: false, ...receive(player, stacks) });
+  if (stacks.length > 0) {
+    const received = receive(player, stacks);
+    events.push({ type: 'gathered', playerId, terrain, pity: false, ...received });
+    fishCaught(player, received.gained, rng, events);
+  }
 }
 
 function gatherSpecial(
@@ -364,9 +524,24 @@ function gatherSpecial(
 }
 
 /** 2.3 脱落。所持品はそのマスに遺品として残る */
-function eliminate(state: GameState, player: PlayerState) {
+function eliminate(state: GameState, player: PlayerState, events: GameEvent[]) {
+  // 4.3 死んだふり：HP1で耐える。他の人には脱落に見せる
+  if (player.secretTrait === 'play_dead' && !player.secretUsed) {
+    player.secretUsed = true;
+    player.hp = 1;
+    player.playingDead = true;
+    events.push({ type: 'playerEliminated', playerId: player.id });
+    return;
+  }
   player.hp = 0;
   player.alive = false;
+  player.bleeding = false;
+  player.poisonTurns = 0;
+  // 4.3 執念：次の朝に復活する。所持品は遺品として残る
+  if (player.secretTrait === 'tenacity' && !player.secretUsed) {
+    player.secretUsed = true;
+    player.reviving = true;
+  }
   if (player.inventory.length === 0) return;
   const index = cellIndex(state, player.x, player.y);
   state.relics[index] = [...(state.relics[index] ?? []), ...player.inventory];
@@ -447,11 +622,21 @@ function chasePath(state: GameState, player: PlayerState, target: PlayerState, w
 /** マスに着いたときに起きること。遺品、隠れている人、罠、待ち伏せ */
 function arrive(state: GameState, player: PlayerState, rng: Rng, events: GameEvent[]) {
   takeRelics(state, player, events);
+  markVisited(state, player);
   const index = cellIndex(state, player.x, player.y);
 
+  // 7.4 救助船に最初に入った人が乗る
+  const ship = state.ship;
+  if (ship && !ship.gone && state.turn >= ship.arrivesTurn && ship.x === player.x && ship.y === player.y) {
+    declareWin(state, player.id, 'ship', events);
+    return;
+  }
+
   for (const other of state.players) {
-    if (other.id !== player.id && other.alive && other.hidden && other.x === player.x && other.y === player.y) {
+    if (other.id === player.id || !other.alive || other.x !== player.x || other.y !== player.y) continue;
+    if (other.hidden || other.playingDead) {
       other.hidden = false;
+      other.playingDead = false;
       events.push({ type: 'foundOut', playerId: other.id });
       events.push({ type: 'spotted', playerId: player.id, x: other.x, y: other.y });
     }
@@ -459,18 +644,22 @@ function arrive(state: GameState, player: PlayerState, rng: Rng, events: GameEve
 
   const structure = state.structures[index];
   if (structure?.kind === 'trap' && structure.ownerId !== player.id) {
+    const owner = state.players[structure.ownerId];
+    const master = owner.secretTrait === 'trap_master';
     delete state.structures[index];
     events.push({ type: 'trapSprung', playerId: structure.ownerId, x: player.x, y: player.y });
-    // 6章 警戒していれば罠を見つけられる
-    if (player.guardTurn === state.turn) {
+    // 6章 警戒していれば罠を見つけられる。罠の名人の罠は見つからない
+    if (player.guardTurn === state.turn && !master) {
       events.push({ type: 'trapDisarmed', playerId: player.id });
     } else {
-      player.hp = Math.max(0, player.hp - TRAP_DAMAGE);
+      const damage = TRAP_DAMAGE + (master ? 1 : 0);
+      if (master) reveal(owner, events);
+      player.hp = Math.max(0, player.hp - damage);
       player.ap = 0;
-      events.push({ type: 'trapTriggered', playerId: player.id, damage: TRAP_DAMAGE });
+      events.push({ type: 'trapTriggered', playerId: player.id, damage });
       if (player.hp === 0) {
-        eliminate(state, player);
-        return;
+        eliminate(state, player, events);
+        if (!player.alive) return;
       }
     }
   }
@@ -501,8 +690,11 @@ function strike(
   const night = phaseOf(state.turn) === 'night';
   const guarding = target.guardTurn === state.turn;
   const targetTerrain = state.map.terrain[cellIndex(state, target.x, target.y)];
+  const soldier = hasRole(attacker, 'soldier');
+  const inFort = state.structures[cellIndex(state, target.x, target.y)]?.kind === 'fort';
   const hitChance =
     weapon.hit +
+    (soldier ? SOLDIER.hit : 0) +
     (night && !weapon.ranged ? COMBAT.nightMeleeHit : 0) +
     (diagonal ? COMBAT.diagonalHit : 0) +
     (guarding ? COMBAT.guardHit : 0) +
@@ -517,10 +709,13 @@ function strike(
     const raw =
       (weapon.rollsD3 ? rng.int(1, 3) : 0) +
       weapon.bonus +
+      (soldier ? SOLDIER.damage : 0) +
       (diagonal ? COMBAT.diagonalDamage : 0) -
-      (targetTerrain === 'rock' ? COMBAT.rockDefense : 0);
+      (targetTerrain === 'rock' ? COMBAT.rockDefense : 0) -
+      (inFort ? GOALS.fortDefense : 0);
     damage = Math.max(0, Math.max(1, raw) - (guarding ? COMBAT.guardDamage : 0));
     target.hp = Math.max(0, target.hp - damage);
+    if (soldier) attacker.progress.warPoints += GOALS.warPerHit;
 
     // 5章 出血。傷を負わなければ血は出ない
     if (damage > 0 && weapon.bleed > 0 && !target.bleeding && rng.next() < weapon.bleed) {
@@ -530,13 +725,25 @@ function strike(
     }
 
     // 8.3 略奪。武器は対象外で、持てなければ奪えない。離れた所からは奪えない
-    const candidates = distance <= 1 ? target.inventory.filter((stack) => !WEAPONS[stack.item]) : [];
+    let candidates = distance <= 1 ? target.inventory.filter((stack) => !WEAPONS[stack.item]) : [];
+    // 4.3 隠し財布：1枠だけ奪われない
+    if (target.secretTrait === 'hidden_purse' && candidates.length > 0) {
+      candidates = candidates.slice(1);
+      reveal(target, events);
+    }
     if (candidates.length > 0) {
-      const stack = rng.pick(candidates);
+      // 4.3 盗み上手：一番価値のある物を奪う
+      const best = attacker.secretTrait === 'pickpocket'
+        ? STEAL_PRIORITY.flatMap((item) => candidates.filter((s) => s.item === item))[0]
+        : undefined;
+      if (attacker.secretTrait === 'pickpocket') reveal(attacker, events);
+      const stack = best ?? rng.pick(candidates);
       if (addItem(attacker, stack.item, 1) === 0) {
         stolen = { item: stack.item, count: 1 };
         stack.count -= 1;
         if (stack.count === 0) target.inventory.splice(target.inventory.indexOf(stack), 1);
+        // 主を奪われた漁師は、また別の主を狙える
+        if (stack.item === 'island_lord') target.progress.lordHeldTurns = 0;
       }
     }
 
@@ -547,7 +754,8 @@ function strike(
     }
 
     if (target.hp === 0) {
-      eliminate(state, target);
+      if (soldier) attacker.progress.warPoints += GOALS.warPerKill;
+      eliminate(state, target, events);
     } else if (distance === 0 && rng.next() < COMBAT.counterChance) {
       // 8.3 反撃。殴り返せるのは同じマスにいるときだけ
       counter = COMBAT.counterDamage;
@@ -569,7 +777,7 @@ function strike(
     bleeding,
     bottleBroke: weapon === BOTTLE,
   });
-  if (attacker.hp === 0) eliminate(state, attacker);
+  if (attacker.hp === 0) eliminate(state, attacker, events);
   // 8.3 とどめを刺した人は遺品を優先して拾える
   else if (!target.alive && distance === 0) takeRelics(state, attacker, events);
 }
@@ -605,8 +813,9 @@ function resolveAttack(
       ? hasItem(player, BOTTLE_ITEM) ? [BOTTLE] : []
       : weaponsBestFirst(player, night);
   // 隠れている相手は、同じマスにいるときしか狙えない
+  const concealed = target && (target.hidden || target.playingDead);
   const reachable =
-    target?.alive && target.id !== playerId && (!target.hidden || (target.x === player.x && target.y === player.y));
+    target?.alive && target.id !== playerId && (!concealed || (target.x === player.x && target.y === player.y));
 
   let weapon: WeaponDef | null = null;
   let path: number[] | null = null;
@@ -622,6 +831,11 @@ function resolveAttack(
 
   player.attackedOnTurn = state.turn;
   player.hidden = false;
+  // 動いたことが分かるので、死んだふりも終わる
+  if (player.playingDead) {
+    player.playingDead = false;
+    reveal(player, events);
+  }
   if (!weapon || !path) {
     player.ap -= ATTACK_AP;
     events.push({ type: 'attackFizzled', playerId });
@@ -653,7 +867,7 @@ export function cleanText(text: unknown, maxLength: number): string {
   return Array.from(text.replace(/\p{C}/gu, ' ').trim()).slice(0, maxLength).join('');
 }
 
-function useItem(player: PlayerState, item: ItemId, rng: Rng, events: GameEvent[]) {
+function useItem(state: GameState, player: PlayerState, item: ItemId, rng: Rng, events: GameEvent[]) {
   const playerId = player.id;
   const effect = ITEMS[item].use;
   if (!effect || countItem(player, item) === 0) {
@@ -661,14 +875,26 @@ function useItem(player: PlayerState, item: ItemId, rng: Rng, events: GameEvent[
     return;
   }
   removeItem(player, item, 1);
-  const hunger = Math.min(MAX_HUNGER - player.hunger, effect.hunger ?? 0);
+  // 4.2 料理人と、鍋・塩があると食料の回復が増える
+  const foodBonus = effect.food
+    ? (hasRole(player, 'cook') ? 1 : 0) + (hasItem(player, 'pot') ? 1 : 0) + (effect.salted && hasItem(player, 'salt') ? 1 : 0)
+    : 0;
+  const hunger = Math.min(MAX_HUNGER - player.hunger, (effect.hunger ?? 0) + foodBonus);
   const water = Math.min(MAX_WATER - player.water, effect.water ?? 0);
-  const hp = Math.min(INITIAL_HP - player.hp, effect.hp ?? 0);
+  const hp = Math.min(player.maxHp - player.hp, effect.hp ?? 0);
   player.hunger += hunger;
   player.water += water;
   player.hp += hp;
-  const poisoned = !!effect.risky && rng.next() < POISON.chance;
+  const immune = player.publicTrait === 'iron_stomach' || hasRole(player, 'cook');
+  const poisoned = !!effect.risky && !immune && rng.next() < POISON.chance;
   if (poisoned) player.poisonTurns = POISON.turns;
+  if (effect.curesPoison) player.poisonTurns = 0;
+  // 4.5 医師の作った薬は、誰が使っても医師の治療回数に数える
+  if (item === 'medicine') {
+    const doctor = state.players.find((p) => p.alive && hasRole(p, 'doctor'));
+    if (doctor) doctor.progress.healCount += 1;
+  }
+  if (effect.winsGame) declareWin(state, player.id, 'cook', events);
   if (effect.leaves) addItem(player, effect.leaves, 1);
   const stoppedBleeding = !!effect.stopsBleeding && player.bleeding;
   if (stoppedBleeding) {
@@ -695,19 +921,61 @@ function fatigueChance(action: Action, apSpent: number): number {
   }
 }
 
+/** 4.2 大工はクラフトと建設のAPが1少ない */
+export const recipeAp = (apCost: number, job: JobId | null) => (job === 'carpenter' ? Math.max(1, apCost - 1) : apCost);
+
+/** 2.2 勝者が決まった */
+function declareWin(state: GameState, playerId: number, reason: VictoryReason, events: GameEvent[]) {
+  if (state.finished) return;
+  state.finished = true;
+  state.winnerId = playerId;
+  state.victoryReason = reason;
+  events.push({ type: 'victory', playerId, reason });
+}
+
+/** 7.4 救助船を呼ぶ。到着地点は呼んだ本人にだけすぐ知らせる */
+function callShip(state: GameState, player: PlayerState, rng: Rng, events: GameEvent[]) {
+  const { width, terrain } = state.map;
+  const beaches = terrain.flatMap((t, i) => (t === 'beach' ? [i] : []));
+  if (beaches.length === 0) return;
+  const spot = rng.pick(beaches);
+  const arrivesTurn = state.turn + SMOKE.shipDelayTurns;
+  // 昼に着けば3ターン、夜に着けば2ターン待つ
+  const leavesTurn = arrivesTurn + (phaseOf(arrivesTurn) === 'day' ? 2 : 1);
+  const x = spot % width;
+  const y = Math.floor(spot / width);
+  state.ship = { x, y, callerId: player.id, arrivesTurn, leavesTurn };
+  events.push({ type: 'shipCalled', playerId: player.id, x, y, arrivesTurn });
+}
+
 function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: Rng, events: GameEvent[]) {
   const playerId = player.id;
   const recipe = RECIPES[recipeId];
-  if (player.ap < recipe.ap) {
+  const apCost = recipeAp(recipe.ap, player.job);
+  if (player.ap < apCost) {
     events.push({ type: 'blocked', playerId, reason: 'noAp' });
     return;
   }
-  const inputs = recipe.inputs.find((set) => set.every(({ item, count }) => countItem(player, item) >= count));
+  const index = cellIndex(state, player.x, player.y);
+  // 職業専用のレシピと、建てる場所の決まり
+  const wrongJob = recipe.job && !hasRole(player, recipe.job);
+  const wrongPlace = recipe.onTerrain && state.map.terrain[index] !== recipe.onTerrain;
+  const smokeBlocked =
+    recipe.builds === 'smoke' &&
+    (state.ship !== null || state.turn < SMOKE.firstTurn || state.turn > SMOKE.lastTurn);
+  if (wrongJob || wrongPlace || smokeBlocked) {
+    events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+    return;
+  }
+  const counts = new Map<ItemId, number>();
+  for (const stack of player.inventory) counts.set(stack.item, (counts.get(stack.item) ?? 0) + stack.count);
+  const inputs = recipe.course
+    ? courseIngredients(counts)
+    : recipe.inputs.find((set) => set.every(({ item, count }) => countItem(player, item) >= count));
   if (!inputs) {
     events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
     return;
   }
-  const index = cellIndex(state, player.x, player.y);
   if (recipe.builds && state.structures[index]) {
     events.push({ type: 'blocked', playerId, reason: 'occupied' });
     return;
@@ -720,13 +988,141 @@ function craft(state: GameState, player: PlayerState, recipeId: RecipeId, rng: R
     events.push({ type: 'blocked', playerId, reason: 'inventoryFull' });
     return;
   }
-  player.ap -= recipe.ap;
+  player.ap -= apCost;
   if (recipe.builds) state.structures[index] = { kind: recipe.builds, ownerId: playerId };
   events.push({ type: 'crafted', playerId, recipe: recipeId, gained: recipe.output ? [recipe.output] : [], lost: [] });
+  if (recipe.builds === 'fort') {
+    const fort = state.structures[index];
+    fort.hp = GOALS.fortHp;
+    fort.builtTurn = state.turn;
+    events.push({ type: 'fortCompleted' });
+  }
+  if (recipe.builds === 'smoke') {
+    events.push({ type: 'smokeLit', x: player.x, y: player.y });
+    callShip(state, player, rng, events);
+  }
   // 出血しているなら、作った包帯をそのまま巻く
   if (recipe.output && ITEMS[recipe.output.item].use?.stopsBleeding && player.bleeding) {
-    useItem(player, recipe.output.item, rng, events);
+    useItem(state, player, recipe.output.item, rng, events);
   }
+}
+
+/** 4.2 医師の治療。同じマスの相手に効く */
+function heal(state: GameState, player: PlayerState, targetId: number, events: GameEvent[]) {
+  const playerId = player.id;
+  const target = state.players[targetId];
+  if (!hasRole(player, 'doctor')) {
+    events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+  } else if (player.ap < HEAL_AP) {
+    events.push({ type: 'blocked', playerId, reason: 'noAp' });
+  } else if (!target?.alive || target.id === playerId || target.x !== player.x || target.y !== player.y) {
+    player.ap -= HEAL_AP;
+    events.push({ type: 'healed', playerId, targetId: null, hp: 0, maxHpUp: false });
+  } else {
+    player.ap -= HEAL_AP;
+    const dying = target.hp === 1;
+    const maxHpUp = !target.treatedOnce;
+    if (maxHpUp) {
+      target.treatedOnce = true;
+      target.maxHp += 1;
+    }
+    const hp = Math.min(target.maxHp - target.hp, GOALS.healAmount);
+    target.hp += hp;
+    target.bleeding = false;
+    target.bleedTicks = 0;
+    target.poisonTurns = 0;
+    // 4.5 同じ相手は2回まで。脱落直前の相手は2回分
+    const p = player.progress;
+    const done = p.healedBy[targetId] ?? 0;
+    const counted = Math.min(GOALS.healPerTarget - done, dying ? 2 : 1);
+    if (counted > 0) {
+      p.healedBy[targetId] = done + counted;
+      p.healCount += counted;
+    }
+    events.push({ type: 'healed', playerId, targetId, hp, maxHpUp });
+    events.push({ type: 'wasHealed', playerId: targetId, hp, maxHpUp });
+  }
+}
+
+/** 7.3 いかだの素材を運び込む。なければ砂浜で作り始める */
+function raftWork(state: GameState, player: PlayerState, events: GameEvent[]) {
+  const playerId = player.id;
+  const index = cellIndex(state, player.x, player.y);
+  const apCost = recipeAp(RAFT.ap, player.job);
+  const existing = state.structures[index];
+  if (state.map.terrain[index] !== 'beach' || (existing && (existing.kind !== 'raft' || existing.ownerId !== playerId))) {
+    events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+    return;
+  }
+  if (player.ap < apCost) {
+    events.push({ type: 'blocked', playerId, reason: 'noAp' });
+    return;
+  }
+  const raft = existing ?? { kind: 'raft' as const, ownerId: playerId, hp: RAFT.hp, stock: [] as ItemStack[] };
+  const stored: ItemStack[] = [];
+  for (const need of RAFT.needs) {
+    const have = raft.stock!.find((s) => s.item === need.item);
+    const missing = need.count - (have?.count ?? 0);
+    const moved = Math.min(missing, countItem(player, need.item));
+    if (moved <= 0) continue;
+    removeItem(player, need.item, moved);
+    if (have) have.count += moved;
+    else raft.stock!.push({ item: need.item, count: moved });
+    stored.push({ item: need.item, count: moved });
+  }
+  if (stored.length === 0 && !existing) {
+    events.push({ type: 'blocked', playerId, reason: 'missingMaterials' });
+    return;
+  }
+  state.structures[index] = raft;
+  player.ap -= apCost;
+  events.push({ type: 'raftWorked', playerId, complete: raftComplete(raft), stored });
+}
+
+const raftComplete = (raft: Structure) =>
+  RAFT.needs.every((need) => (raft.stock ?? []).some((s) => s.item === need.item && s.count >= need.count));
+
+/** 7.3 砦やいかだを壊す。いかだが壊れると素材の半分が残る */
+function smash(state: GameState, player: PlayerState, rng: Rng, events: GameEvent[]) {
+  const playerId = player.id;
+  const index = cellIndex(state, player.x, player.y);
+  const target = state.structures[index];
+  if (!target || (target.kind !== 'fort' && target.kind !== 'raft')) {
+    events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+    return;
+  }
+  if (player.ap < ATTACK_AP) {
+    events.push({ type: 'blocked', playerId, reason: 'noAp' });
+    return;
+  }
+  player.ap -= ATTACK_AP;
+  const weapon = weaponsBestFirst(player, false)[0];
+  const damage = (weapon.rollsD3 ? rng.int(1, 3) : 0) + weapon.bonus + (hasRole(player, 'soldier') ? SOLDIER.damage : 0);
+  target.hp = Math.max(0, (target.hp ?? 0) - damage);
+  const destroyed = target.hp === 0;
+  events.push({ type: 'smashed', playerId, kind: target.kind, hp: target.hp, destroyed });
+  if (!destroyed) return;
+  delete state.structures[index];
+  if (target.kind === 'fort') events.push({ type: 'fortDestroyed' });
+  else {
+    const left = (target.stock ?? [])
+      .map((s) => ({ item: s.item, count: Math.floor(s.count / 2) }))
+      .filter((s) => s.count > 0);
+    if (left.length > 0) state.relics[index] = [...(state.relics[index] ?? []), ...left];
+  }
+}
+
+/** 4.3 読心術。1回だけ他人の予約を覗ける。発動した瞬間に公開される */
+export function useMindRead(previous: GameState, playerId: number, targetId: number): { state: GameState; events: GameEvent[] } | null {
+  const me = previous.players[playerId];
+  const target = previous.players[targetId];
+  if (me?.secretTrait !== 'mind_reader' || me.secretUsed || !target?.alive || targetId === playerId) return null;
+  const state: GameState = JSON.parse(JSON.stringify(previous));
+  const player = state.players[playerId];
+  player.secretUsed = true;
+  const events: GameEvent[] = [];
+  reveal(player, events);
+  return { state, events };
 }
 
 /** 6.1 相手が応じたら密談を始める。本人以外や終わった密談には何もしない */
@@ -763,10 +1159,23 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
     }
     // 2.4 開始フェーズ。満腹度と水分は昼ターンにだけ減る。0のときのダメージは毎ターン
     const isDay = phaseOf(state.turn) === 'day';
+    state.scouts = state.scouts.filter((scout) => scout.untilTurn >= state.turn);
     for (const player of state.players) {
+      // 4.3 執念：次の朝にランダムな砂浜で復活する
+      if (!player.alive && player.reviving && isDay) {
+        const beaches = state.map.terrain.flatMap((t, i) => (t === 'beach' ? [i] : []));
+        const spot = rng.pick(beaches);
+        player.x = spot % state.map.width;
+        player.y = Math.floor(spot / state.map.width);
+        player.alive = true;
+        player.reviving = false;
+        player.hp = TENACITY_HP;
+        reveal(player, events);
+        events.push({ type: 'playerRevived', playerId: player.id });
+      }
       if (!player.alive) continue;
       if (isDay) {
-        player.hunger = Math.max(0, player.hunger - 1);
+        player.hunger = Math.max(0, player.hunger - (player.publicTrait === 'big_eater' ? 2 : 1));
         player.water = Math.max(0, player.water - 1);
       }
       const hunger = player.hunger === 0 ? STATUS_DAMAGE.starving : 0;
@@ -778,10 +1187,12 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
         player.hp = Math.max(0, player.hp - hunger - thirst - poison - bleed);
         events.push({ type: 'statusDamage', playerId: player.id, hunger, thirst, poison, bleed });
         if (player.hp === 0) {
-          eliminate(state, player);
-          continue;
+          eliminate(state, player, events);
+          if (!player.alive) continue;
         }
       }
+      // 4.3 早起きは発動した日に公開
+      if (isDay && player.secretTrait === 'early_riser') reveal(player, events);
       // 1回目のダメージは必ず受け、そのあとは回を重ねるほど止まりやすくなる
       if (player.bleeding) {
         const chance = BLEED_CONTINUE_CHANCE[player.bleedTicks] ?? 0;
@@ -796,6 +1207,24 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       player.fatiguedNext = false;
       player.ap = AP_PER_TURN - (isWeak(player) ? 1 : 0) - (player.tired ? 1 : 0);
       refreshMemory(state, player);
+    }
+    // 7.4 救助船。到着の1ターン前に全員へ公開する
+    const previousOrder = state.initiative.map((entry) => entry.playerId);
+    const ship = state.ship;
+    if (ship && !ship.gone) {
+      if (state.turn === ship.arrivesTurn - 1) events.push({ type: 'shipSoon', x: ship.x, y: ship.y });
+      if (state.turn === ship.arrivesTurn) {
+        events.push({ type: 'shipArrived', x: ship.x, y: ship.y });
+        // すでにそのマスにいる人は、行動順の早い人から乗る
+        const aboard = previousOrder.map((id) => state.players[id]).find(
+          (p) => p?.alive && p.x === ship.x && p.y === ship.y,
+        );
+        if (aboard) declareWin(state, aboard.id, 'ship', events);
+      }
+      if (state.turn > ship.leavesTurn) {
+        ship.gone = true;
+        events.push({ type: 'shipLeft' });
+      }
     }
     state.initiative = rollInitiative(state.players, rng, state.turn);
     state.rngState = rng.state;
@@ -813,7 +1242,13 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
 
   switch (action.type) {
     case 'move': {
-      const [dx, dy] = DIRECTION_DELTA[action.direction];
+      // 4.3 方向音痴はときどき違う方へ進む。コンパスがあれば迷わない
+      let direction = action.direction;
+      if (player.secretTrait === 'lost_sense' && !hasItem(player, 'compass') && rng.next() < LOST_SENSE_DRIFT) {
+        direction = rng.pick((Object.keys(DIRECTION_DELTA) as Direction[]).filter((d) => d !== action.direction));
+        reveal(player, events);
+      }
+      const [dx, dy] = DIRECTION_DELTA[direction];
       const x = player.x + dx;
       const y = player.y + dy;
       if (x < 0 || y < 0 || x >= state.map.width || y >= state.map.height) {
@@ -822,7 +1257,14 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       }
       const index = cellIndex(state, x, y);
       const terrain = state.map.terrain[index];
-      const cost = TERRAIN[terrain].moveCost;
+      const baseCost = TERRAIN[terrain].moveCost;
+      // 4.3 健脚：草原と砂浜の移動が1ターンに1回無料
+      const free =
+        player.publicTrait === 'swift_feet' &&
+        (terrain === 'grass' || terrain === 'beach') &&
+        player.freeMoveTurn !== state.turn;
+      const cost = baseCost === null ? null : free ? 0 : baseCost;
+      if (free && cost !== null) player.freeMoveTurn = state.turn;
       if (cost === null || cost > player.ap) {
         // 霧の中へ進もうとして止まった場合は、そのマスの地形が分かる
         player.memory[index] = terrain;
@@ -856,8 +1298,121 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       );
       break;
     case 'use':
-      useItem(player, action.item, rng, events);
+      useItem(state, player, action.item, rng, events);
       break;
+    case 'heal':
+      heal(state, player, action.targetId, events);
+      break;
+    case 'explore': {
+      if (player.ap < EXPLORE_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+        break;
+      }
+      player.ap -= EXPLORE_AP;
+      player.exploreTurn = state.turn;
+      refreshMemory(state, player);
+      markVisited(state, player);
+      events.push({ type: 'explored', playerId });
+      break;
+    }
+    case 'repair': {
+      const fort = state.structures[cellIndex(state, player.x, player.y)];
+      if (fort?.kind !== 'fort' || !hasRole(player, 'carpenter') || player.repairedTurn === state.turn) {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      } else if (player.ap < REPAIR_AP) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else {
+        player.ap -= REPAIR_AP;
+        player.repairedTurn = state.turn;
+        fort.hp = Math.min(GOALS.fortHp, (fort.hp ?? 0) + GOALS.fortRepair);
+        events.push({ type: 'repaired', playerId, hp: fort.hp });
+      }
+      break;
+    }
+    case 'smash':
+      smash(state, player, rng, events);
+      break;
+    case 'extinguish': {
+      const index = cellIndex(state, player.x, player.y);
+      if (state.structures[index]?.kind !== 'smoke') {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      } else if (player.ap < SMOKE.extinguishAp) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else {
+        player.ap -= SMOKE.extinguishAp;
+        delete state.structures[index];
+        // 船が着く前に消せば来なくなる
+        if (state.ship && state.turn < state.ship.arrivesTurn) state.ship = null;
+        events.push({ type: 'smokeOut' });
+      }
+      break;
+    }
+    case 'raftWork':
+      raftWork(state, player, events);
+      break;
+    case 'launch': {
+      const raft = state.structures[cellIndex(state, player.x, player.y)];
+      if (raft?.kind !== 'raft' || raft.ownerId !== playerId || !raftComplete(raft)) {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      } else if (player.ap < 1) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else {
+        player.ap -= 1;
+        declareWin(state, playerId, 'raft', events);
+      }
+      break;
+    }
+    case 'useRadio': {
+      const onMountain = state.map.terrain[cellIndex(state, player.x, player.y)] === 'mountain';
+      if (player.secretTrait !== 'radio' || player.secretUsed) {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      } else if (!player.radioFixed) {
+        if (!onMountain) events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+        else if (player.ap < SMOKE.radioRepairAp) events.push({ type: 'blocked', playerId, reason: 'noAp' });
+        else {
+          player.ap -= SMOKE.radioRepairAp;
+          player.radioFixed = true;
+          events.push({ type: 'radioFixed', playerId });
+        }
+      } else if (state.ship !== null) {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      } else if (player.ap < SMOKE.radioCallAp) {
+        events.push({ type: 'blocked', playerId, reason: 'noAp' });
+      } else {
+        player.ap -= SMOKE.radioCallAp;
+        player.secretUsed = true;
+        callShip(state, player, rng, events);
+      }
+      break;
+    }
+    case 'scout': {
+      const day = dayOf(state.turn);
+      const { width, height } = state.map;
+      if (player.publicTrait !== 'hawk_eye' || player.scoutDay === day) {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+        break;
+      }
+      player.scoutDay = day;
+      const cells: number[] = [];
+      for (let y = Math.max(0, action.y - 1); y <= Math.min(height - 1, action.y + 1); y++) {
+        for (let x = Math.max(0, action.x - 1); x <= Math.min(width - 1, action.x + 1); x++) {
+          cells.push(y * width + x);
+          player.memory[y * width + x] = state.map.terrain[y * width + x];
+        }
+      }
+      state.scouts.push({ playerId, cells, untilTurn: state.turn + 1 });
+      events.push({ type: 'scouted', playerId });
+      break;
+    }
+    case 'falseAlarm': {
+      if (player.secretTrait !== 'false_alarm' || player.secretUsed) {
+        events.push({ type: 'blocked', playerId, reason: 'notAllowed' });
+      } else {
+        player.secretUsed = true;
+        events.push({ type: 'nearVictory' });
+      }
+      break;
+    }
     case 'craft':
       craft(state, player, action.recipe, rng, events);
       break;
@@ -867,7 +1422,7 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
         break;
       }
       const inHut = state.structures[cellIndex(state, player.x, player.y)]?.kind === 'hut';
-      const healed = Math.min(INITIAL_HP - player.hp, player.ap * (inHut ? REST_HUT_MULTIPLIER : 1));
+      const healed = Math.min(player.maxHp - player.hp, player.ap * (inHut ? REST_HUT_MULTIPLIER : 1));
       player.hp += healed;
       player.ap = 0;
       player.restedTurn = state.turn;
@@ -934,10 +1489,13 @@ export function applyAction(previous: GameState, action: Action): ActionResult {
       break;
     }
     case 'whisper': {
-      if (player.ap < WHISPER_AP) {
+      // 4.3 人望：1日に1回APを使わずに密談できる
+      const free = player.publicTrait === 'respected' && player.freeWhisperDay !== dayOf(state.turn);
+      if (!free && player.ap < WHISPER_AP) {
         events.push({ type: 'blocked', playerId, reason: 'noAp' });
       } else {
-        player.ap -= WHISPER_AP;
+        if (free) player.freeWhisperDay = dayOf(state.turn);
+        else player.ap -= WHISPER_AP;
         state.whisperIntents.push({ from: playerId, to: action.targetId });
         events.push({ type: 'whisperAsked', playerId });
       }
@@ -1011,6 +1569,7 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
           };
         }
         if (action.type === 'whisper') return { type: 'whisper', playerId, targetId: targetOf(playerId, action) };
+        if (action.type === 'heal') return { type: 'heal', playerId, targetId: targetOf(playerId, action) };
         return { ...action, playerId };
       }),
     );
@@ -1030,6 +1589,20 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
     }
   }
   const steps: ResolutionStep[] = [];
+
+  /** 特殊勝利の条件を満たしていれば確定する */
+  const settleVictory = () => {
+    const found = findWinner(state);
+    if (!found) return false;
+    state = JSON.parse(JSON.stringify(state)) as GameState;
+    const events: GameEvent[] = [];
+    declareWin(state, found.playerId, found.reason, events);
+    steps.push({ actorId: null, events, state });
+    return true;
+  };
+  const finishWith = () => {
+    steps.push({ actorId: null, events: [{ type: 'gameFinished', winnerId: state.winnerId }], state });
+  };
 
   for (const { playerId } of previous.initiative) {
     if (!state.players[playerId].alive) continue;
@@ -1053,6 +1626,11 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
         events.push({ type: 'planCancelled', playerId, count: plan.length - i - 1 });
       }
       steps.push({ actorId: playerId, events, state });
+      // 誰かがその場で勝った（船に乗った、いかだで出た、フルコースを食べた）
+      if (state.finished || settleVictory()) {
+        finishWith();
+        return { state, steps };
+      }
       if (stopped || eliminated) break;
     }
   }
@@ -1073,18 +1651,29 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
   state.whisperIntents = [];
   if (whisperEvents.length > 0) steps.push({ actorId: null, events: whisperEvents, state });
 
-  // 終了フェーズ。特殊勝利の判定はマイルストーン4で足す
+  // 終了フェーズ。最後の1人（執念で復活を待つ人は数に入れる）
   const finish = () => {
-    const alive = state.players.filter((player) => player.alive);
+    if (state.finished) {
+      finishWith();
+      return true;
+    }
+    const alive = state.players.filter((player) => player.alive || player.reviving);
     const lastOneStanding = state.players.length > 1 && alive.length === 1;
     if (!lastOneStanding && alive.length > 0) return false;
     state = JSON.parse(JSON.stringify(state)) as GameState;
     state.finished = true;
     state.winnerId = lastOneStanding ? alive[0].id : null;
-    steps.push({ actorId: null, events: [{ type: 'gameFinished', winnerId: state.winnerId }], state });
+    state.victoryReason = lastOneStanding ? 'lastStanding' : null;
+    finishWith();
     return true;
   };
   if (finish()) return { state, steps };
+
+  // 4.5 島の主を持ったまま過ごしたターンを数える
+  state = JSON.parse(JSON.stringify(state)) as GameState;
+  for (const player of state.players) {
+    if (player.alive && hasItem(player, 'island_lord')) player.progress.lordHeldTurns += 1;
+  }
 
   const before = state;
   const next = applyAction(state, { type: 'endTurn' });
@@ -1095,7 +1684,18 @@ export function resolveTurn(previous: GameState, plans: Record<number, PlanActio
       events.push({ type: 'playerEliminated', playerId: player.id });
     }
   }
+  // 4.5 あと1歩の人がいれば、誰かは伏せて全員に知らせる
+  for (const player of state.players) {
+    if (!state.nearNotified.includes(player.id) && isNearVictory(state, player)) {
+      state.nearNotified.push(player.id);
+      events.push({ type: 'nearVictory' });
+    }
+  }
   steps.push({ actorId: null, events, state });
+  if (!state.finished && settleVictory()) {
+    finishWith();
+    return { state, steps };
+  }
   finish();
   return { state, steps };
 }

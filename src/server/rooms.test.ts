@@ -33,7 +33,7 @@ describe('ルーム', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    manager = new RoomManager({ stepMs: 100, inviteOrigin: 'http://example.test' });
+    manager = new RoomManager({ stepMs: 100, inviteOrigin: 'http://example.test', useDraft: false });
   });
 
   afterEach(() => {
@@ -326,6 +326,119 @@ describe('ルーム', () => {
     expect(clients[1].last('planning').view.turn).toBe(1);
   });
 
+  describe('キャラ選択', () => {
+    let drafting: RoomManager;
+    beforeEach(() => {
+      drafting = new RoomManager({ stepMs: 100, draftSeconds: 30 });
+    });
+    afterEach(() => drafting.dispose());
+
+    function draftRoom(count: number) {
+      const host = new FakeClient(drafting);
+      host.say({ t: 'create', name: 'h', setup: { players: 3, mapSize: 'small', planSeconds: 60 } });
+      const clients = [host];
+      for (let i = 1; i < count; i++) {
+        const c = new FakeClient(drafting);
+        c.say({ t: 'join', code: host.last('joined').code, name: `f${i}` });
+        clients.push(c);
+      }
+      host.say({ t: 'start' });
+      return clients;
+    }
+
+    it('開始するとキャラ選択が始まり、秘密特性は本人にしか届かない', () => {
+      const [a, b] = draftRoom(2);
+      const viewA = a.last('draft').view;
+      const viewB = b.last('draft').view;
+      expect(viewA.phase).toBe('reroll');
+      expect(viewA.secretTrait).not.toBe(viewB.secretTrait);
+      expect(JSON.stringify(b.inbox)).not.toContain(viewA.secretTrait);
+      expect(a.all('planning')).toHaveLength(0);
+    });
+
+    it('全員が手動で選ぶとゲームが始まり、職業が反映される', () => {
+      const clients = draftRoom(2);
+      for (const c of clients) c.say({ t: 'draftReroll', reroll: false });
+      const jobs = ['fisher', 'cook'] as const;
+      for (const job of jobs) {
+        const turn = clients[0].last('draft').view.turnSeat!;
+        clients[turn].say({ t: 'draftJob', job });
+      }
+      expect(clients[0].last('draft').view.phase).toBe('items');
+      for (const c of clients) c.say({ t: 'draftItems', indexes: [0, 1] });
+      for (let i = 0; i < 2; i++) {
+        const turn = clients[0].last('draft').view.turnSeat!;
+        const open = clients[0].last('draft').view.starts.find((s) => !s.taken)!;
+        clients[turn].say({ t: 'draftStart', start: open.index });
+      }
+      const planning = clients[0].last('planning');
+      expect(planning.view.roster.map((p) => p.job).sort()).toEqual(['cook', 'fisher']);
+      expect(planning.view.me.inventory.length).toBeGreaterThanOrEqual(2);
+      // 他の人の秘密特性は届かない
+      const secret = clients[1].last('planning').view.secret.trait!;
+      expect(JSON.stringify(planning.view)).not.toContain(secret);
+    });
+
+    it('順番でない人の選択や、おかしな値は断る', () => {
+      const clients = draftRoom(2);
+      for (const c of clients) c.say({ t: 'draftReroll', reroll: false });
+      const turn = clients[0].last('draft').view.turnSeat!;
+      const other = clients[turn === 0 ? 1 : 0];
+      other.say({ t: 'draftJob', job: 'cook' });
+      expect(other.last('error').code).toBe('badMessage');
+      clients[turn].say({ t: 'draftJob', job: 'constructor' as never });
+      expect(clients[turn].last('error').code).toBe('badMessage');
+      clients[turn].say({ t: 'draftItems', indexes: 'x' as never });
+      expect(clients[turn].last('error').code).toBe('badMessage');
+    });
+
+    it('時間切れでも自動で進み、放置しても始まる', () => {
+      const [a] = draftRoom(2);
+      vi.advanceTimersByTime(30_000 * 12);
+      expect(a.all('planning').length).toBeGreaterThan(0);
+      expect(a.last('planning').view.roster[0].job).not.toBeNull();
+    });
+
+    it('再接続すると今の選択画面に戻れる', () => {
+      const [a] = draftRoom(2);
+      const token = a.last('joined').token;
+      drafting.disconnected(a);
+      const back = new FakeClient(drafting);
+      back.say({ t: 'resume', token });
+      expect(back.last('draft').view.phase).toBe('reroll');
+    });
+
+    it('結果で全員の秘密特性と進み具合が公開される', () => {
+      const clients = draftRoom(2);
+      vi.advanceTimersByTime(30_000 * 12);
+      const code = clients[0].last('joined').code;
+      const rooms = (drafting as unknown as { rooms: Map<string, { state: any }> }).rooms;
+      rooms.get(code)!.state.players[1].alive = false;
+      clients[0].say({ t: 'plan', actions: [], ready: true });
+      vi.advanceTimersByTime(60_000);
+      const result = clients[1].last('result');
+      expect(result).toMatchObject({ winnerId: 0, reason: 'lastStanding' });
+      expect(result.players[0].secretTrait).not.toBeNull();
+      expect(result.players[0].job).not.toBeNull();
+    });
+
+    it('読心術は使った本人にだけ予約が届き、発動は全員に公開される', () => {
+      const [a, b] = draftRoom(2);
+      vi.advanceTimersByTime(30_000 * 12);
+      const code = a.last('joined').code;
+      const rooms = (drafting as unknown as { rooms: Map<string, { state: any }> }).rooms;
+      const state = rooms.get(code)!.state;
+      state.players[0].secretTrait = 'mind_reader';
+      state.players[0].secretUsed = false;
+      state.players[0].secretRevealed = false;
+      b.say({ t: 'plan', actions: [{ type: 'gather' }], ready: false });
+      a.say({ t: 'mindRead', targetId: 1 });
+      expect(a.last('mindReadResult').actions).toEqual([{ type: 'gather' }]);
+      expect(b.all('mindReadResult')).toHaveLength(0);
+      expect(b.last('announce').events[0]).toMatchObject({ type: 'traitRevealed', trait: 'mind_reader' });
+    });
+  });
+
   describe('密談', () => {
     const tokens = new Map<FakeClient, string>();
 
@@ -441,7 +554,7 @@ describe('WebSocket 経由', () => {
   const open: WebSocket[] = [];
 
   beforeEach(async () => {
-    manager = new RoomManager({ stepMs: 5 });
+    manager = new RoomManager({ stepMs: 5, useDraft: false });
     server = createServer();
     sockets = attachSockets(server, manager);
     await new Promise<void>((resolve) => server.listen(0, resolve));

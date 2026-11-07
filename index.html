@@ -83,9 +83,23 @@
       </div>
     </section>
 
+    <section id="screen-draft" class="screen center" hidden>
+      <div class="panel-narrow">
+        <h1>キャラ選択 <span id="draft-timer" class="timer"></span></h1>
+        <div id="draft-mine" class="card stack"></div>
+        <div id="draft-body" class="card stack"></div>
+        <div class="card stack">
+          <h2>参加者</h2>
+          <ul id="draft-seats" class="members"></ul>
+        </div>
+      </div>
+    </section>
+
     <section id="screen-result" class="screen center" hidden>
       <div class="panel-narrow center-text">
         <h1 id="result-title"></h1>
+        <p id="result-reason" class="hint"></p>
+        <div id="result-players" class="card stack result-players"></div>
         <div class="card stack">
           <p class="muted">この島のシード値</p>
           <p id="result-seed" class="room-code small"></p>
@@ -144,6 +158,13 @@
           <button id="act-hide" class="btn btn-small" type="button">隠れる</button>
           <button id="act-ambush" class="btn btn-small" type="button">待ち伏せ</button>
         </section>
+
+        <section id="special-actions" class="special-actions"></section>
+
+        <details class="card" id="role-card" open>
+          <summary id="role-title">あなたの役割</summary>
+          <div id="role-body" class="stack"></div>
+        </details>
 
         <section class="card">
           <h2>予約 <span id="plan-note" class="muted"></span></h2>
