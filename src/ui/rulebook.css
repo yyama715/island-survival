@@ -75,9 +75,22 @@ td.num { white-space: nowrap; text-align: center; }
 .flow div { padding: 1.5mm 2mm; border: 1.5px solid var(--navy); }
 .flow strong { display: block; color: var(--navy); }
 .tiny { font-size: 7.8pt; color: #4a5370; }
-.foot { margin-top: 3mm; font-size: 7.8pt; color: #4a5370; text-align: right; }
+.foot { margin-top: 1mm; font-size: 7.8pt; color: #4a5370; text-align: right; }
 
 /* 紙の高さちょうどにすると端数で白紙が挟まるので、印刷では高さを決めない */
 @media print {
   .page { min-height: 0; }
 }
+
+/* 戦闘の届く範囲のマス目 */
+.reach { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin: 1mm 0; }
+.reach figure { margin: 0; font-size: 7.6pt; }
+.reach figure b { display: block; color: var(--navy); margin-bottom: 0.8mm; }
+.reach figcaption { margin-top: 0.8mm; line-height: 1.35; }
+.grid { display: grid; grid-template-columns: repeat(5, 4.4mm); grid-auto-rows: 4.4mm; gap: 0.4mm; }
+.grid i, .key { display: inline-flex; align-items: center; justify-content: center; background: #e6ead8; border: 1px solid #b8c0a0; font-style: normal; font-size: 7pt; }
+.key { width: 3.6mm; height: 3.6mm; margin: 0 0.8mm 0 2mm; vertical-align: -0.6mm; }
+.grid .hit, .key.hit { background: #f4a23a; border-color: #c9601c; }
+.grid .diag, .key.diag { background: #f8d29a; border-color: #c9601c; }
+.grid .walk, .key.walk { background: repeating-linear-gradient(45deg, #fff 0 1mm, #f4a23a 1mm 1.6mm); border-color: #c9601c; }
+.grid .me, .key.me { background: var(--navy); border-color: var(--navy); color: #fff; }

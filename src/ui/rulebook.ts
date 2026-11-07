@@ -6,6 +6,7 @@ import {
   AMBUSH_AP,
   ATTACK_AP,
   BALANCE,
+  COMBAT,
   EARLY_PROTECTION_TURNS,
   EXPLORE_AP,
   FINAL,
@@ -46,7 +47,7 @@ const inputs = (id: RecipeId) =>
     : RECIPES[id].inputs.map((set) => set.map(({ item, count }) => `${ITEMS[item].name}×${count}`).join('、')).join(' または ');
 
 const terrains: TerrainId[] = ['beach', 'grass', 'forest', 'rock', 'mountain', 'spring', 'river', 'cave', 'wreck', 'ruins'];
-const recipes: RecipeId[] = ['stone_knife', 'stone_axe', 'spear', 'bow', 'bandage', 'rope', 'fishing_rod', 'canteen', 'torch', 'backpack', 'trap', 'hut', 'smoke', 'sail'];
+const recipes: RecipeId[] = ['stone_knife', 'spear', 'bow', 'bandage', 'rope', 'fishing_rod', 'hut', 'campfire', 'smoke', 'sail'];
 const traitRows = (secret: boolean) =>
   (Object.keys(TRAITS) as TraitId[])
     .filter((id) => TRAITS[id].secret === secret)
@@ -54,6 +55,18 @@ const traitRows = (secret: boolean) =>
     .sort((x, y) => RARITY_ORDER.indexOf(TRAITS[x].rarity) - RARITY_ORDER.indexOf(TRAITS[y].rarity))
     .map((id) => `<tr><th>${TRAITS[id].name}</th><td class="num">${RARITY_NAMES[TRAITS[id].rarity]}</td><td>${TRAITS[id].text}</td></tr>`)
     .join('');
+
+/** 自分を真ん中にした5×5のマス目。kind は相手がそのマスにいたときの届き方 */
+function reachGrid(title: string, note: string, kind: (dx: number, dy: number) => string): string {
+  const cells: string[] = [];
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const me = dx === 0 && dy === 0;
+      cells.push(`<i class="${kind(dx, dy)}${me ? ' me' : ''}">${me ? '自' : ''}</i>`);
+    }
+  }
+  return `<figure><b>${title}</b><div class="grid">${cells.join('')}</div><figcaption>${note}</figcaption></figure>`;
+}
 
 const page1 = `
 <section class="page">
@@ -164,7 +177,7 @@ const page2 = `
   </table>
   <p class="tiny">同じマスで採取を続けると採り尽くされて出にくくなる（時間で戻る）。海には入れない。洞窟・難破船・遺跡は「特殊マス」で、最初の採取はレアが確定。</p>
 
-  <h2 class="pixel">クラフト（主なもの）</h2>
+  <h2 class="pixel">クラフト（主なもの。ほかはゲーム内の一覧で）</h2>
   <table>
     <tr><th class="icon"></th><th>名前</th><th>AP</th><th>素材</th><th>効果</th><th class="icon"></th><th>名前</th><th>AP</th><th>素材</th><th>効果</th></tr>
     ${Array.from({ length: recipes.length / 2 }, (_, i) =>
@@ -180,19 +193,23 @@ const page2 = `
       .join('')}
   </table>
 
-  <h2 class="pixel">戦闘</h2>
+  <h2 class="pixel">戦闘（マス目で見る届く範囲）</h2>
+  <div class="reach">
+    ${reachGrid('素手・ナイフ・石斧', '同じマスだけ。隣の相手には、そのマスへ入ってから殴る（移動コスト＋攻撃1AP）', (dx, dy) => (dx === 0 && dy === 0 ? 'hit' : Math.abs(dx) + Math.abs(dy) === 1 ? 'walk' : ''))}
+    ${reachGrid('槍', `隣の8マスまで動かずに届く。斜めは命中率${Math.round(COMBAT.diagonalHit * 100)}%・ダメージ${COMBAT.diagonalDamage}`, (dx, dy) => (Math.max(Math.abs(dx), Math.abs(dy)) <= 1 ? (dx !== 0 && dy !== 0 ? 'diag' : 'hit') : ''))}
+    ${reachGrid('弓（昼だけ）', `2マス先まで。森にいる相手は命中率${Math.round(COMBAT.rangedIntoForest * 100)}%`, (dx, dy) => (Math.max(Math.abs(dx), Math.abs(dy)) <= 2 ? (dx !== 0 && dy !== 0 ? 'diag' : 'hit') : ''))}
+    ${reachGrid('石を投げる（昼だけ）', '2マス先まで。縦・横・斜めのまっすぐな線の上だけ', (dx, dy) => (Math.max(Math.abs(dx), Math.abs(dy)) <= 2 && (dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy)) ? (dx !== 0 && dy !== 0 ? 'diag' : 'hit') : ''))}
+  </div>
+  <p class="tiny"><span class="key me">自</span>あなた<span class="key hit"></span>届く<span class="key diag"></span>斜め（命中率−15%・ダメージ−1）<span class="key walk"></span>そのマスへ入れば殴れる</p>
   <div class="cols">
     <ul>
-      <li>最初の${EARLY_PROTECTION_TURNS / 2}日間は、プレイヤーを攻撃できない</li>
-      <li>素手は命中70%。武器で威力と射程が上がり、刃物は出血させやすい</li>
-      <li>命中すると相手の持ち物を1つ奪う。反撃されることもある</li>
-      <li>斜めの相手には命中率−15%・ダメージ−1。夜の攻撃は当たりにくい</li>
+      <li><b>相手が動いたら</b>：解決のとき相手が先に動いて離れても、残りのAPで届くなら<b>追いかけて</b>攻撃する。届かなければ不発でAP−1。攻撃は1ターンに1回</li>
+      <li><b>奪う・反撃</b>：命中すると相手の持ち物を1つ奪う（隣のマスまで）。同じマスで殴ると${Math.round(COMBAT.counterChance * 100)}%で反撃される</li>
+      <li>最初の${EARLY_PROTECTION_TURNS / 2}日間は、プレイヤーを攻撃できない。夜は人影しか見えず、殴る攻撃も当たりにくい</li>
     </ul>
     <ul>
-      <li>岩場にいる人は守りが固い。砦の中は防御+2</li>
-      <li>罠を置くと、そのマスに入った他人にHP−2＋足止め</li>
-      <li>石を投げる（昼だけ）、瓶で殴る（1回で割れる）こともできる</li>
-      <li>脱落した人の持ち物は「遺品」としてその場に残る</li>
+      <li>岩場にいる人は守りが固く（ダメージ−${COMBAT.rockDefense}）、砦の中は防御+2。防御中の相手は当たりにくい</li>
+      <li>罠：そのマスに入った他人にHP−2＋足止め。瓶で殴ると1回で割れる。脱落した人の持ち物は「遺品」として残る</li>
     </ul>
   </div>
   <p class="foot">2 / 3</p>
